@@ -136,9 +136,37 @@ without modification.
   position was still open), and 39 audit-log entries (`DECISION`/`ORDER_INTENT`/`ORDER_FILLED` ×
   13). `npm run build --workspace=@trade-bot/engine` (real `tsc` compile, not just `--noEmit`)
   also passes.
-- [ ] **Phase 3 — Real exchange integration.** `BinanceBroker` (official connector, REST + user
-  data WebSocket), order-intent outbox, idempotent client order IDs, reconciliation job. Tested
-  against Binance testnet before mainnet.
+- [~] **Phase 3 — Real exchange integration.** Code complete 2026-09-05, **live testnet
+  verification still pending** (needs `BINANCE_API_KEY`/`BINANCE_API_SECRET` — see below).
+  - `broker/binanceBroker.ts` — `BinanceBroker` using the official `@binance/spot` connector
+    (`github.com/binance/binance-connector-js`, confirmed via its npm `repository` field before
+    installing). MARKET orders only, matching what `StrategyRunner` issues; a market order's
+    synchronous REST response already contains its fills, so this doesn't need the user-data
+    WebSocket yet — that becomes necessary once LIMIT orders are introduced. Fetches and caches
+    each symbol's real `LOT_SIZE` step size via `exchangeInfo` and rounds the order quantity to it
+    before sending — addresses the "Binance rejects wrong-precision quantities" failure mode
+    flagged earlier. Maps Binance's order-status strings onto our internal `OrderStatus` union
+    (`NEW`→`SUBMITTED`, unrecognized statuses→`FAILED` rather than throwing).
+  - `reconciliation/reconcile.ts` — read-only: diffs Mongo's open orders (`SUBMITTED`/
+    `PARTIALLY_FILLED`) against Binance's `getOpenOrders()` in both directions, and sums each
+    active strategy's free capital-ledger balance per asset against the exchange's real
+    `getAccount()` free balance, flagging only if the ledger claims *more* free capital than
+    actually exists (the ledger claiming less is expected and not flagged). Mismatches are written
+    to `audit_log` as `RECONCILIATION_MISMATCH`. Never cancels an order or adjusts the ledger.
+  - `scripts/testnetSmokeTest.ts` — manual verification script
+    (`npm run testnet-smoke --workspace=@trade-bot/engine`): places one small real MARKET order on
+    Binance's spot testnet, then runs `reconcile()`. Hardcodes `useTestnet: true` — never point it
+    at mainnet. Requires `BINANCE_API_KEY`/`BINANCE_API_SECRET` (testnet keys from
+    testnet.binance.vision — fake funds, zero financial risk) in `.env` or the shell; refuses to
+    run without them rather than silently no-op'ing.
+  - The order-intent outbox and idempotent `clientOrderId` from CLAUDE.md's Engine section were
+    already implemented in `StrategyRunner` back in Phase 2 (broker-agnostic by design) — nothing
+    Binance-specific was needed there.
+  - Typechecks clean (`npm run typecheck --workspace=@trade-bot/engine`), builds clean via real
+    `tsc` (not just `--noEmit`), and the Phase 2 paper-trading run was re-verified unaffected
+    (identical 6-trade output against the same real BTCUSDT candles).
+  - **Outstanding**: nobody has run `testnet-smoke` against a real Binance testnet account yet —
+    do that (with testnet-only keys, never mainnet) before checking this phase off as fully done.
 - [ ] **Phase 4 — Live dashboard.** Redis pub/sub → WS/SSE bridge → Next.js pages: strategy
   list/state, per-strategy stats (Sharpe, max drawdown, win rate, profit factor), trade log, kill
   switch.
