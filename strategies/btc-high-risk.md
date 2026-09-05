@@ -1,6 +1,7 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 8, live-verified. Iteration 1 (Fibonacci entries + structural/
+**Status:** draft, iteration 10, live-verified — a modest, mixed result
+(see Status detail below and Backtest results). Iteration 1 (Fibonacci entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
 range. Iteration 2 stripped the strategy to entries-only, holding until the
@@ -48,8 +49,30 @@ work cutting noise), total return improved to -50.02% (from -79.20%), max
 drawdown improved to 56.78% (from 82.83%) — but win rate fell further to
 34.90%. The payoff ratio is now genuinely favorable (avg win $20.08 vs avg
 loss -$14.77, ~1.36:1) — this needs roughly 42% win rate to break even, and
-34.90% isn't there yet, but it's closer than any version before it. See
-Backtest results for the full breakdown.
+34.90% isn't there yet, but it's closer than any version before it.
+
+Iteration 9 tried adding EMA(9/21) + VWAP confluence on top, per the web
+research cited in Backtest results (real short-term setups trade Fibonacci
+as one leg of confluence, not alone). **Tested live and made things much
+worse** — win rate fell to 17.65%, PF to 0.272 — likely because requiring
+price above VWAP and EMA9>EMA21 for a long directly contradicts the Fib
+logic's whole premise (buying a pullback means price has already dropped
+below recent structure, which tends to coincide with EMA9 dipping below
+EMA21 and price sitting below VWAP — exactly what the filter rejected). A
+real negative result, stated plainly rather than rationalized. **Reverted**
+— iteration 8 (no confluence gate) is the current baseline.
+
+Iteration 10 adds a **minimum 4h zone width** check on top of iteration
+8: the 4h pivot high-to-low range is now also required to be at least
+`minZoneWidth` (default $2000) before a trade is allowed, on the theory
+that a narrow 4h range signals an indecisive market rather than a real
+trending structure. **Live-verified — a modest, mixed result**: trades
+fell further (192→163), total return and drawdown both improved slightly
+(-50.02%→-45.14%, 56.78%→54.02%), and the payoff ratio actually improved
+to ~1.68:1 (avg win $24.06 vs avg loss -$14.31) — but win rate fell to
+30.06% (from 34.90%), landing at roughly the same distance from its
+now-higher breakeven point (~37.3%). Net effect: a lateral move, not a
+clear win like iterations 7-8 were. See Backtest results.
 
 ## Overview
 
@@ -91,7 +114,7 @@ design.
    against the same levels, go short).
 5. No trend-strength filter — iteration 3's ADX filter was tested and made
    results slightly worse, dropped. No session filter.
-6. **Minimum swing size (iteration 7 — not yet live-tested)**: only trades a
+6. **Minimum swing size (iteration 7)**: only trades a
    swing if the pivot-high-to-pivot-low range is at least `minSwingPct`% of
    price. Added after iterations 5-6 (stop-loss + risk-based sizing) drove
    trade count from 65 to 695 — the pivot detector whipsaws rapidly during
@@ -99,13 +122,29 @@ design.
    immediately-reachable Fib levels, and the user flagged the resulting
    pile of near-breakeven trades directly. This filter sits out swings too
    small to be worth trading rather than trying to fix it after the fact.
-7. **4h trend confirmation (iteration 8 — not yet live-tested)**: computes
+7. **4h trend confirmation (iteration 8)**: computes
    the same pivot-based trend direction independently on the 4h timeframe
    (via `request.security`) and only allows a trade when the 1h and 4h
    trend agree — a 1h bullish retracement setup is skipped if the 4h
    pivots currently read bearish, and vice versa. Directly requested to cut
    trade count/noise further by requiring both timeframes to actually
    agree, not just the 1h swing in isolation.
+8. **EMA/VWAP confluence — attempted in iteration 9, reverted.** Tried
+   requiring EMA(9) > EMA(21) and close above the session VWAP for a long
+   (mirror for short), on the theory that real short-term crypto setups
+   trade Fibonacci as one leg of confluence rather than alone. Made results
+   much worse live (win rate 34.90%→17.65%, PF 0.729→0.272) — the filter
+   likely rejects exactly the pullback entries the Fib logic is designed to
+   catch, since a real dip tends to coincide with EMA9 briefly below EMA21
+   and price below VWAP. Not carried forward — see Backtest results.
+9. **Minimum 4h zone width (iteration 10 — not yet live-tested)**: the 4h
+   pivot high-to-low range from iteration 8's trend confirmation is now
+   also checked as a support/resistance zone width — if that range is
+   narrower than `minZoneWidth` (default $2000), the trade is skipped even
+   if direction and the 1h Fib level otherwise line up. A tight 4h zone
+   means the market is in an indecisive, narrow range rather than a
+   meaningful trending structure — directly requested to cut further
+   low-quality trades that iterations 7-8's filters still let through.
 
 ## Stop loss logic
 
@@ -177,6 +216,7 @@ ratio than a nearby fixed/structural target.
 | Risk % of equity at 50.0% | 1.0% | iteration 6 |
 | Risk % of equity at 61.8% | 1.5% | iteration 6 |
 | Risk % of equity at 78.6% | 2.0% | iteration 6 |
+| Min 4h zone width ($) | $2000 | iteration 10 |
 
 ## Pine Script v6
 
@@ -211,6 +251,7 @@ riskPct382     = input.float(0.5, "Risk % of equity at 38.2% (iteration 6)")
 riskPct500     = input.float(1.0, "Risk % of equity at 50.0% (iteration 6)")
 riskPct618     = input.float(1.5, "Risk % of equity at 61.8% (iteration 6)")
 riskPct786     = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
+minZoneWidth   = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
 
 // ---- Pivot-based swing detection (iteration 4) ----
 // Replaces iteration 1-3's ta.highest/ta.lowest-over-a-fixed-window approach,
@@ -266,12 +307,16 @@ fib500 = isBullish ? lastPivotHigh - diff * 0.5   : lastPivotLow + diff * 0.5
 fib618 = isBullish ? lastPivotHigh - diff * 0.618 : lastPivotLow + diff * 0.618
 fib786 = isBullish ? lastPivotHigh - diff * 0.786 : lastPivotLow + diff * 0.786
 
-// ---- 4h trend confirmation (iteration 8) ----
+// ---- 4h trend confirmation (iteration 8) + zone width (iteration 10) ----
 // Same pivot-based direction logic, computed independently on the 4h
 // timeframe. A trade only fires when the 1h and 4h reads agree -- directly
 // requested to cut noise further by requiring both timeframes to actually
-// agree, not just the 1h swing in isolation.
-f_swingDir(len) =>
+// agree, not just the 1h swing in isolation. Also returns the 4h pivot
+// high-to-low range as a support/resistance zone width (iteration 10) --
+// a trade is skipped if that zone is narrower than minZoneWidth, on the
+// theory that a tight 4h range signals an indecisive market rather than a
+// real trending structure.
+f_swingInfo(len) =>
     ph2 = ta.pivothigh(high, len, len)
     pl2 = ta.pivotlow(low, len, len)
     var float lastPH2    = na
@@ -284,12 +329,21 @@ f_swingDir(len) =>
     if not na(pl2)
         lastPL2    := pl2
         lastPL2Bar := bar_index - len
-    (na(lastPH2) or na(lastPL2)) ? 0 : (lastPH2Bar > lastPL2Bar ? 1 : (lastPL2Bar > lastPH2Bar ? -1 : 0))
+    dir = (na(lastPH2) or na(lastPL2)) ? 0 : (lastPH2Bar > lastPL2Bar ? 1 : (lastPL2Bar > lastPH2Bar ? -1 : 0))
+    zoneWidth = (na(lastPH2) or na(lastPL2)) ? na : (lastPH2 - lastPL2)
+    [dir, zoneWidth]
 
-trend4h = request.security(syminfo.tickerid, "240", f_swingDir(pivotLeftRight), lookahead = barmerge.lookahead_off)
+[trend4h, zoneWidth4h] = request.security(syminfo.tickerid, "240", f_swingInfo(pivotLeftRight), lookahead = barmerge.lookahead_off)
 
-isBullishConfirmed = isBullish and trend4h == 1
-isBearishConfirmed = isBearish and trend4h == -1
+validZone4h = not na(zoneWidth4h) and zoneWidth4h >= minZoneWidth
+
+// EMA/VWAP confluence was tried here (iteration 9) and reverted -- it made
+// win rate and profit factor much worse (see Backtest results). Requiring
+// price above VWAP and EMA9>EMA21 for a long directly contradicts buying a
+// Fib pullback, which by definition means price already dropped below
+// recent structure.
+isBullishConfirmed = isBullish and trend4h == 1 and validZone4h
+isBearishConfirmed = isBearish and trend4h == -1 and validZone4h
 
 // ---- Position state ----
 var float stopPrice = na
@@ -461,19 +515,65 @@ guide](https://www.cryptowisser.com/guides/fibonacci-vwap-ema-crypto-scalping/),
 strategies](https://mudrex.com/learn/crypto-futures-scalping-strategies/))
 — neither has been tried yet; see Next steps.
 
+**Iteration 9 (EMA/VWAP confluence, attempted and reverted), same date
+range:**
+
+| Metric | Value |
+|---|---|
+| Total PnL | -$262.30 (-26.23%) |
+| Win rate | **17.65% (9/51)** |
+| Profit factor | **0.272** |
+| Max drawdown | 26.23% |
+
+Requiring EMA(9)>EMA(21) and close above VWAP for a long (mirror for
+short) cut trade count sharply (192→51) but win rate and profit factor
+both collapsed. Total dollar loss looks smaller only because far fewer,
+much smaller trades were taken — this is not an improvement, it's the
+filter rejecting most of the setups that used to work. **Reverted** — see
+Entry logic and Status for the likely mechanism (the filter contradicts
+buying a pullback by construction).
+
+**Iteration 10 (minimum 4h zone width), same date range, built on
+iteration 8 (not 9):**
+
+| Metric | Value |
+|---|---|
+| Total PnL | -$451.37 (-45.14%) |
+| Win rate | 30.06% (49/163) |
+| Profit factor | 0.723 |
+| Max drawdown | 54.02% |
+| Avg win / avg loss | +$24.06 / -$14.31 (~1.68:1) |
+
+A lateral move, not a clear improvement: trade count fell further
+(192→163), total return and drawdown both improved slightly, and the
+payoff ratio actually got better (~1.68:1, best of any iteration so far) —
+but win rate fell to 30.06%, landing about the same distance from its
+now-higher breakeven point (~37.3%) as iteration 8 was from its own
+(~42%). Worth keeping as a real, if modest, refinement, but not the
+win-rate breakthrough iteration 9 was meant to be (and wasn't).
+
 ## Next steps
 
-1. **Add confluence beyond Fibonacci alone** — VWAP and/or EMA(9/21)
-   crossover as additional entry conditions, per the research above. This
-   is the biggest untried lever and directly targets the remaining win-rate
-   gap (34.90% → ~42%+ needed).
-2. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
+1. **The core problem is still unsolved**: every iteration since 5 has
+   payoff ratio and win rate trading off against each other, landing
+   roughly the same distance from breakeven (iteration 8: needs 42%, has
+   34.90%; iteration 10: needs 37.3%, has 30.06%). Filtering for "better"
+   setups keeps improving the ratio while proportionally cutting win rate
+   too — this pattern across three different filters (min swing, 4h
+   confirmation, 4h zone width) suggests the remaining unprofitability
+   isn't going to be fixed by one more noise filter of the same kind.
+2. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
+   already past a breakout) actively fights the Fib pullback logic. Any
+   future confluence attempt needs to check *momentum turning*, not just
+   trend alignment — e.g. price reclaiming the fast EMA from below on the
+   bounce, not already being above it.
+3. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
    with 100x leverage — real scalping research points to 1-5 minute charts
    with 0.25-0.5% targets, not multi-hour swing holds. Not tested this
    session.
-3. Re-verify iteration 3's ADX-filter result under the now-fixed swing
+4. Re-verify iteration 3's ADX-filter result under the now-fixed swing
    logic — it was tested against the buggy trend direction, so that result
    is no longer trustworthy either way.
-4. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
+5. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
    8's List of Trades) — likely a real gap-through-the-stop case given 1h
    BTC candle size, not a bug, but worth a quick check before assuming so.
