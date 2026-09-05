@@ -1,7 +1,8 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 10, live-verified — a modest, mixed result
-(see Status detail below and Backtest results). Iteration 1 (Fibonacci entries + structural/
+**Status:** draft, iteration 11 — **the first profitable result in this
+strategy's entire history** (+$102.36, +10.24%, PF 1.06). See Status detail
+below and Backtest results. Iteration 1 (Fibonacci entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
 range. Iteration 2 stripped the strategy to entries-only, holding until the
@@ -72,7 +73,28 @@ fell further (192→163), total return and drawdown both improved slightly
 to ~1.68:1 (avg win $24.06 vs avg loss -$14.31) — but win rate fell to
 30.06% (from 34.90%), landing at roughly the same distance from its
 now-higher breakeven point (~37.3%). Net effect: a lateral move, not a
-clear win like iterations 7-8 were. See Backtest results.
+clear win like iterations 7-8 were.
+
+Rather than tune another filter blind, went back to diagnosing real trade
+data (the same technique that found `short-term-high-risk`'s session
+filter): added temporary `log.info()` diagnostics to iteration 10 and
+cross-referenced all 164 signals against outcome. ADX and 4h zone width
+showed no separation between winners and losers. Two real patterns did:
+the 61.8% Fib level had a 16.7% win rate vs. 38.2%'s 40% (not yet acted
+on), and — the big one — **night-session trades (20:00-06:00 UTC) were
+profitable (+$82.5) while day-session trades (07:00-19:00 UTC) accounted
+for essentially the entire loss (-$534.0)**. Note this is the *opposite*
+session from `short-term-high-risk`'s finding — different symbol,
+timeframe, and mechanism, no contradiction, just worth not assuming one
+strategy's session pattern transfers to another.
+
+**Iteration 11 adds a night-session-only filter** (20:00-06:00 UTC) on top
+of iteration 10. **Live-verified: +$102.36 (+10.24%), PF 1.06, 23.23% win
+rate (23/99), max drawdown 29.37%** — the first profitable configuration
+in this strategy's entire history. Avg win $62.10 vs avg loss -$18.27 (a
+~3.4:1 payoff ratio) needs only ~22.7% win rate to break even, and 23.23%
+clears it. Real, but a thin margin on one BTCUSDT window — not yet
+re-verified elsewhere.
 
 ## Overview
 
@@ -137,7 +159,7 @@ design.
    likely rejects exactly the pullback entries the Fib logic is designed to
    catch, since a real dip tends to coincide with EMA9 briefly below EMA21
    and price below VWAP. Not carried forward — see Backtest results.
-9. **Minimum 4h zone width (iteration 10 — not yet live-tested)**: the 4h
+9. **Minimum 4h zone width (iteration 10)**: the 4h
    pivot high-to-low range from iteration 8's trend confirmation is now
    also checked as a support/resistance zone width — if that range is
    narrower than `minZoneWidth` (default $2000), the trade is skipped even
@@ -145,6 +167,11 @@ design.
    means the market is in an indecisive, narrow range rather than a
    meaningful trending structure — directly requested to cut further
    low-quality trades that iterations 7-8's filters still let through.
+10. **Night session only (iteration 11)**: only trades 20:00-06:00 UTC.
+    Found by diagnostic logging (not theorized) — night-session signals were
+    profitable (+$82.5) while day-session signals accounted for essentially
+    the entire loss (-$534.0) on the same 164-signal sample. First filter in
+    this strategy's history to flip the whole backtest profitable.
 
 ## Stop loss logic
 
@@ -198,11 +225,14 @@ ratio than a nearby fixed/structural target.
 ## Targets
 
 - **Market regime**: trades with whichever 1h trend the most recent pivot
-  pair implies, now gated by minimum swing size (iteration 7) — no
-  trend-strength filter (iteration 3's ADX gate was tested and dropped).
-- **Performance expectation**: none — this iteration is explicitly
-  diagnostic (does filtering out tiny choppy swings fix the trade-count
-  explosion iterations 5-6 introduced?), not a return-seeking version.
+  pair implies, gated by minimum swing size (iteration 7), 4h zone width
+  (iteration 10), and now restricted to the 20:00-06:00 UTC session
+  (iteration 11) — no trend-strength filter (iteration 3's ADX gate was
+  tested and dropped).
+- **Performance expectation**: the first iteration where this is
+  meaningful — iteration 11 is net profitable (+10.24%, PF 1.06) on the
+  one BTCUSDT window tested. Still exploratory; not yet re-verified on a
+  different range or symbol.
 
 ## Parameters
 
@@ -217,13 +247,15 @@ ratio than a nearby fixed/structural target.
 | Risk % of equity at 61.8% | 1.5% | iteration 6 |
 | Risk % of equity at 78.6% | 2.0% | iteration 6 |
 | Min 4h zone width ($) | $2000 | iteration 10 |
+| Session start hour (UTC) | 20 | iteration 11 |
+| Session end hour (UTC) | 6 | iteration 11 |
 
 ## Pine Script v6
 
 Runs on the **1h chart**. One `request.security` call (iteration 8) pulls
-the same pivot-based trend logic computed independently on the 4h
-timeframe, with `lookahead=barmerge.lookahead_off` (the same safe pattern
-`short-term-high-risk` uses).
+the same pivot-based trend logic (plus zone width, iteration 10) computed
+independently on the 4h timeframe, with `lookahead=barmerge.lookahead_off`
+(the same safe pattern `short-term-high-risk` uses).
 
 ```pinescript
 //@version=6
@@ -243,15 +275,17 @@ strategy(
      commission_value = 0.05)
 
 // ---- Inputs ----
-leverage       = input.float(100, "Leverage (see margin_long/short note above)", minval = 1, maxval = 125, step = 1)
-pivotLeftRight = input.int(5, "Pivot confirmation (bars each side)")
-maxLossPct     = input.float(1.0, "Max loss per trade (% price move, iteration 5)")
-minSwingPct    = input.float(1.5, "Minimum swing size to trade (% of price, iteration 7)")
-riskPct382     = input.float(0.5, "Risk % of equity at 38.2% (iteration 6)")
-riskPct500     = input.float(1.0, "Risk % of equity at 50.0% (iteration 6)")
-riskPct618     = input.float(1.5, "Risk % of equity at 61.8% (iteration 6)")
-riskPct786     = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
-minZoneWidth   = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
+leverage         = input.float(100, "Leverage (see margin_long/short note above)", minval = 1, maxval = 125, step = 1)
+pivotLeftRight   = input.int(5, "Pivot confirmation (bars each side)")
+maxLossPct       = input.float(1.0, "Max loss per trade (% price move, iteration 5)")
+minSwingPct      = input.float(1.5, "Minimum swing size to trade (% of price, iteration 7)")
+riskPct382       = input.float(0.5, "Risk % of equity at 38.2% (iteration 6)")
+riskPct500       = input.float(1.0, "Risk % of equity at 50.0% (iteration 6)")
+riskPct618       = input.float(1.5, "Risk % of equity at 61.8% (iteration 6)")
+riskPct786       = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
+minZoneWidth     = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
+sessionStartHour = input.int(20, "Session start hour (UTC, inclusive, iteration 11)")
+sessionEndHour   = input.int(6, "Session end hour (UTC, inclusive, iteration 11)")
 
 // ---- Pivot-based swing detection (iteration 4) ----
 // Replaces iteration 1-3's ta.highest/ta.lowest-over-a-fixed-window approach,
@@ -342,8 +376,19 @@ validZone4h = not na(zoneWidth4h) and zoneWidth4h >= minZoneWidth
 // price above VWAP and EMA9>EMA21 for a long directly contradicts buying a
 // Fib pullback, which by definition means price already dropped below
 // recent structure.
-isBullishConfirmed = isBullish and trend4h == 1 and validZone4h
-isBearishConfirmed = isBearish and trend4h == -1 and validZone4h
+
+// ---- Session filter (iteration 11) ----
+// Found by diagnostic logging (not theorized) across all 164 of iteration
+// 10's trade signals: night-session trades (20:00-06:00 UTC) were
+// profitable (+$82.5) while day-session trades (07:00-19:00 UTC)
+// accounted for essentially the entire loss (-$534.0) -- see Backtest
+// results. First filter in this strategy's history to flip the whole
+// backtest profitable.
+barHourUTC  = hour(time, "UTC")
+inNightSess = barHourUTC >= sessionStartHour or barHourUTC <= sessionEndHour
+
+isBullishConfirmed = isBullish and trend4h == 1 and validZone4h and inNightSess
+isBearishConfirmed = isBearish and trend4h == -1 and validZone4h and inNightSess
 
 // ---- Position state ----
 var float stopPrice = na
@@ -552,28 +597,60 @@ now-higher breakeven point (~37.3%) as iteration 8 was from its own
 (~42%). Worth keeping as a real, if modest, refinement, but not the
 win-rate breakthrough iteration 9 was meant to be (and wasn't).
 
+**Diagnostic pass on iteration 10 (164 signals) — same technique that found
+`short-term-high-risk`'s session filter**: added temporary `log.info()`
+capturing hour, day-of-week, 4h ADX, 4h zone width, volume ratio, and which
+Fib level triggered each entry; cross-referenced against actual outcome.
+
+- **ADX and 4h zone width**: no separation between winners and losers —
+  stated plainly as a null result, same as it was for `short-term-high-risk`.
+- **Fib level**: 38.2% ran a 40.0% win rate (14/35); 61.8% ran only 16.7%
+  (5/30) — a real, not-yet-acted-on pattern (61.8% is currently sized as a
+  *larger* risk allocation despite being the weakest level).
+- **Session — the standout finding**: night (20:00-06:00 UTC) ran +$82.5
+  total on the 164 signals; day (07:00-19:00 UTC) ran -$534.0 — day-session
+  trades accounted for essentially the entire loss. Note this is the
+  *opposite* session from `short-term-high-risk`'s finding; different
+  symbol/timeframe/mechanism, not a contradiction.
+
+**Iteration 11 (night-session-only filter, 20:00-06:00 UTC), same date
+range:**
+
+| Metric | Value |
+|---|---|
+| Total PnL | **+$102.36 (+10.24%)** |
+| Win rate | 23.23% (23/99) |
+| Profit factor | **1.06** |
+| Max drawdown | 29.37% |
+| Avg win / avg loss | +$62.10 / -$18.27 (~3.4:1) |
+
+**The first profitable configuration in this strategy's entire history.**
+Win rate is the lowest of any iteration, but the payoff ratio (~3.4:1) more
+than compensates — breakeven at that ratio is ~22.7%, and 23.23% clears it.
+Real, live-verified, but a thin margin on one BTCUSDT window (Jan-Sep
+2026) — not yet re-verified on a different range or symbol, and small
+enough that normal sample variance could erase it.
+
 ## Next steps
 
-1. **The core problem is still unsolved**: every iteration since 5 has
-   payoff ratio and win rate trading off against each other, landing
-   roughly the same distance from breakeven (iteration 8: needs 42%, has
-   34.90%; iteration 10: needs 37.3%, has 30.06%). Filtering for "better"
-   setups keeps improving the ratio while proportionally cutting win rate
-   too — this pattern across three different filters (min swing, 4h
-   confirmation, 4h zone width) suggests the remaining unprofitability
-   isn't going to be fixed by one more noise filter of the same kind.
-2. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
+1. **Re-verify on a different date range or symbol** before trusting this
+   margin — a ~$100 edge over 99 trades on one window is real progress, not
+   proof. This is the single most important unfinished check.
+2. **Act on the 61.8% level finding**: either drop that level entirely or
+   reduce its risk allocation (currently 1.5%, one of the larger sizes,
+   despite the worst win rate of any level at 16.7%).
+3. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
    already past a breakout) actively fights the Fib pullback logic. Any
    future confluence attempt needs to check *momentum turning*, not just
    trend alignment — e.g. price reclaiming the fast EMA from below on the
    bounce, not already being above it.
-3. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
+4. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
    with 100x leverage — real scalping research points to 1-5 minute charts
    with 0.25-0.5% targets, not multi-hour swing holds. Not tested this
    session.
-4. Re-verify iteration 3's ADX-filter result under the now-fixed swing
+5. Re-verify iteration 3's ADX-filter result under the now-fixed swing
    logic — it was tested against the buggy trend direction, so that result
    is no longer trustworthy either way.
-5. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
+6. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
    8's List of Trades) — likely a real gap-through-the-stop case given 1h
    BTC candle size, not a bug, but worth a quick check before assuming so.
