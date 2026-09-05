@@ -1,8 +1,9 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 13 — dropping the 61.8% Fib level entirely
-nearly doubled total PnL (+$194.89, +19.49%, PF 1.136, live-verified). See
-Status detail below and Backtest results. Iteration 1 (Fibonacci entries + structural/
+**Status:** draft, iteration 14 — also dropped the 38.2% level (same
+treatment as 61.8%, same diagnostic method), now +$232.02 (+23.20%), PF
+1.18, live-verified. Only the 50.0% and 78.6% Fib levels remain tradeable.
+See Status detail below and Backtest results. Iteration 1 (Fibonacci entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
 range. Iteration 2 stripped the strategy to entries-only, holding until the
@@ -218,6 +219,16 @@ design.
     weakness is real and durable, not a one-off. Live-verified: total PnL
     nearly doubled (+$101.77 → +$194.89), PF improved (1.06 → 1.136), and
     drawdown improved (29.37% → 26.77%) — see Backtest results.
+12. **38.2% level also dropped entirely (iteration 14)**: same treatment,
+    same diagnostic method, re-run against the fresh 94-trade sample
+    created by dropping 61.8%. 38.2% was already the second-weakest level
+    at iteration 13 (20.0% WR, PF 0.401) and got worse on the new sample
+    (17.9% WR, 5/28, PF 0.389, -$79.58) — a real, durable weakness across
+    two different trade samples, not noise. Only 50.0% and 78.6% remain
+    tradeable now. Live-verified: total PnL improved again (+$194.89 →
+    +$232.02), PF improved (1.136 → 1.18), though trade count dropped
+    sharply (94 → 74, since only two levels can trigger an entry now) and
+    drawdown ticked up slightly (26.77% → 27.92%).
 
 ## Stop loss logic
 
@@ -267,14 +278,15 @@ ratio than a nearby fixed/structural target.
   construction, that formula collapses to simply `margin = equity ×
   riskPct / 100` — the leverage and stop-distance terms cancel out exactly.
   riskPct still scales with which Fib level triggered entry (deeper
-  retracement = more risk budget). **61.8% dropped from the table entirely
-  in iteration 13** (diagnostic found it was the only level with a negative
-  profit factor — see Entry logic and Backtest results) — a retracement
-  landing in that band is no longer traded, not resized:
+  retracement = more risk budget). **61.8% dropped in iteration 13, 38.2%
+  dropped in iteration 14** (diagnostic found both were the only levels
+  with a negative profit factor, on two different trade samples — see
+  Entry logic and Backtest results) — retracements landing in either band
+  are no longer traded, not resized. Only two levels remain active:
 
   | Level | Risk % of equity |
   |---|---|
-  | 38.2% | 0.5% |
+  | 38.2% | *(not traded, iteration 14)* |
   | 50.0% | 1.0% |
   | 61.8% | *(not traded, iteration 13)* |
   | 78.6% | 2.0% |
@@ -301,7 +313,7 @@ ratio than a nearby fixed/structural target.
 | Pivot confirmation (bars each side) | 5 | iteration 4 |
 | Max loss per trade | `1/leverage` (=1.0% at 100x) | iteration 5, tied to leverage in iteration 12 |
 | Minimum swing size (% of price) | 1.5% | iteration 7 |
-| Risk % of equity at 38.2% | 0.5% | iteration 6 |
+| Risk % of equity at 38.2% | *(not traded)* | iteration 6, dropped in iteration 14 |
 | Risk % of equity at 50.0% | 1.0% | iteration 6 |
 | Risk % of equity at 61.8% | *(not traded)* | iteration 6, dropped in iteration 13 |
 | Risk % of equity at 78.6% | 2.0% | iteration 6 |
@@ -337,7 +349,6 @@ strategy(
 leverage         = input.float(100, "Leverage (see margin_long/short note above)", minval = 1, maxval = 125, step = 1)
 pivotLeftRight   = input.int(5, "Pivot confirmation (bars each side)")
 minSwingPct      = input.float(1.5, "Minimum swing size to trade (% of price, iteration 7)")
-riskPct382       = input.float(0.5, "Risk % of equity at 38.2% (iteration 6)")
 riskPct500       = input.float(1.0, "Risk % of equity at 50.0% (iteration 6)")
 riskPct786       = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
 minZoneWidth     = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
@@ -468,12 +479,11 @@ f_marginForRisk(riskPct) =>
 // ---- Entries: reversal-based, plus the liquidation-point stop (iteration 12) ----
 // Gated on the *confirmed* (1h+4h agreeing) signals (iteration 8); fib
 // levels themselves still come from the 1h swing computed above.
-// 61.8% level dropped entirely (iteration 13): diagnostic on the current
-// 99-trade sample found it was the single worst level -- 10.5% WR (2/19),
-// PF 0.322, -$265.03 -- while every other level was net positive or close
-// to breakeven. A retracement that reaches the 61.8%-78.6% band but not
-// 78.6% itself is now simply not traded (falls through to no signal),
-// rather than reclassified into a neighboring level's sizing.
+// 61.8% dropped (iteration 13) and 38.2% dropped (iteration 14): diagnostic
+// found both were the only levels with a profit factor below 1, on two
+// different trade samples (61.8%: 10.5% WR, PF 0.322, -$265.03; 38.2%:
+// 17.9% WR, PF 0.389, -$79.58), while 50.0% and 78.6% stayed net positive.
+// Only those two levels remain tradeable now.
 if isBullishConfirmed
     float entryRiskPct = na
     if low <= fib786
@@ -483,7 +493,7 @@ if isBullishConfirmed
     else if low <= fib500
         entryRiskPct := riskPct500
     else if low <= fib382
-        entryRiskPct := riskPct382
+        entryRiskPct := na
     if not na(entryRiskPct)
         margin = f_marginForRisk(entryRiskPct)
         qty = (margin * leverage) / close
@@ -498,7 +508,7 @@ else if isBearishConfirmed
     else if high >= fib500
         entryRiskPct := riskPct500
     else if high >= fib382
-        entryRiskPct := riskPct382
+        entryRiskPct := na
     if not na(entryRiskPct)
         margin = f_marginForRisk(entryRiskPct)
         qty = (margin * leverage) / close
@@ -756,16 +766,49 @@ run); 100/100 log entries matched to trades with zero discrepancies, and
 the per-level totals reconciled exactly against the dashboard's aggregate
 stats (23/99 wins, PF 1.06) before the change was made.
 
+**Iteration 14 (38.2% Fib level also dropped), same date range:**
+
+Re-ran the same diagnostic against the fresh 94-trade sample iteration 13
+created (removing 61.8% changes trade sequencing, so the old 99-trade
+per-level numbers no longer applied):
+
+| Level | Trades | Win rate | Profit factor | Total PnL |
+|---|---|---|---|---|
+| 38.2% | 28 | **17.9% (5/28)** | **0.389** | **-$79.58** |
+| 50.0% | 17 | 35.3% (6/17) | 2.257 | +$185.00 |
+| 78.6% | 49 | 24.5% (12/49) | 1.069 | +$69.21 |
+
+38.2% was already the second-weakest level in iteration 13's read (20.0%
+WR, PF 0.401, -$64.59) and got worse on this fresh sample — a real,
+worsening pattern across two different samples, not noise. Dropped it
+entirely, same treatment as 61.8%:
+
+| Metric | Value |
+|---|---|
+| Total PnL | **+$232.02 (+23.20%)** |
+| Win rate | 25.68% (19/74) |
+| Profit factor | **1.18** |
+| Max drawdown | 27.92% |
+
+Another real improvement — total PnL up again (+$194.89 → +$232.02), PF up
+(1.136 → 1.18) — though trade count dropped sharply (94 → 74, since only
+two Fib levels can trigger an entry now) and drawdown ticked up slightly
+(26.77% → 27.92%), worth watching if this pattern continues: each level
+drop concentrates risk into fewer, larger trades. Only 50.0% and 78.6%
+remain tradeable. 95/95 diagnostic log entries matched to trades with zero
+discrepancies.
+
 ## Next steps
 
 1. **Re-verify on a different date range or symbol** before trusting this
-   margin — a ~$195 edge over 94 trades on one window is real progress, not
+   margin — a ~$232 edge over 74 trades on one window is real progress, not
    proof. This is the single most important unfinished check, more so now
-   that the margin is bigger.
-2. **Look harder at 38.2%**: it's now the only level with a profit factor
-   below 1 (0.401, -$64.59) besides the just-removed 61.8%. Not acted on
-   yet since the user's request was specifically about 61.8%, but worth the
-   same treatment (drop vs. resize) if the pattern holds on a re-check.
+   that the margin is bigger and trade count keeps shrinking.
+2. **Watch for over-fitting from repeated level-dropping**: two levels are
+   gone now, each decision individually justified by real diagnostic data,
+   but the strategy is down to 74 trades from an original ~190+ signal
+   pool. If a third level ever looks weak, that's a much smaller sample to
+   trust — treat any future level cut with more skepticism than this one.
 3. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
    already past a breakout) actively fights the Fib pullback logic. Any
    future confluence attempt needs to check *momentum turning*, not just
