@@ -87,8 +87,18 @@ without modification.
   **Note for later:** when `apps/ui` starts importing real code (not just types) from
   `@trade-bot/shared`, add `transpilePackages: ["@trade-bot/shared"]` to
   `apps/ui/next.config.ts` — Next.js doesn't transpile TS in workspace packages by default.
-- [ ] **Phase 1 — Data layer.** Define the Mongo collections above with `Decimal128` for money
-  fields; minimal Mongo access layer in `packages/shared`.
+- [x] **Phase 1 — Data layer.** Done 2026-09-05. All 7 collections modeled as TypeScript
+  interfaces in `packages/shared/src/models/` (`Strategy`, `Order`, `Trade`, `EquitySnapshot`,
+  `CapitalLedgerEntry`, `AuditLogEntry`, `ChatopsCommand`), all money fields typed as `Decimal128`.
+  `packages/shared/src/money.ts` has `toDecimal128`/`decimal128ToNumber` helpers —
+  `toDecimal128` only accepts a string, deliberately, so a caller can't launder a float through it.
+  `packages/shared/src/db/` has `connection.ts` (`connectMongo`/`closeMongo`), `collections.ts`
+  (typed collection accessors + `COLLECTION_NAMES`), and `indexes.ts` (`ensureIndexes`, idempotent
+  — safe to call on every app startup). Notable indexes: unique `clientOrderId` on `orders`
+  (enforces order idempotency at the DB level) and unique `slug` on `strategies`.
+  Verified live: `docker compose up -d`, then `npm run verify --workspace=@trade-bot/shared`
+  connected to the dev Mongo, created all indexes, and confirmed all 7 collections exist.
+  Root `.env.example` added (`MONGODB_URI`, `REDIS_URL` for Phase 4).
 - [ ] **Phase 2 — Engine core, paper trading only.** `Strategy` + `Broker` interfaces,
   `PaperBroker`, Capital Ledger, Risk Manager, one trivial strategy (MA cross) proving the full
   pipeline with zero exchange risk.

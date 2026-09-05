@@ -1,4 +1,5 @@
-// Placeholder for shared cross-app types (Strategy, Order, Trade) and the
-// Broker interface. Designed in Phase 2 (see root CLAUDE.md) — kept empty
-// until then so it doesn't lock in a shape before the engine core exists.
-export {};
+export * from "./models/index.js";
+export * from "./money.js";
+export * from "./db/connection.js";
+export * from "./db/collections.js";
+export * from "./db/indexes.js";
