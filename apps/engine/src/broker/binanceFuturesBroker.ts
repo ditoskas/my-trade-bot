@@ -38,6 +38,10 @@ function roundToStepSize(quantity: Decimal, stepSize: Decimal): Decimal {
   return quantity.div(stepSize).floor().mul(stepSize);
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 // Talks to Binance's USDT-M perpetual futures API via the official (but
 // early — v0.1.7, ships no TypeScript types) @binance/futures-connector.
 // See CLAUDE.md Phase 3b for why it's treated as less battle-tested than
@@ -145,22 +149,36 @@ export class BinanceFuturesBroker implements Broker {
     };
   }
 
+  // Phase 6: closes the race flagged when this was first built — the fill
+  // can land in the trade list a beat after the order response comes back.
+  // Retries a few times before giving up and letting the caller fall back
+  // to the (possibly stale) order response.
   private async getFillsForOrder(symbol: string, orderId: number | string): Promise<OrderResult["fills"]> {
-    const response = await this.client.getAccountTradeList(symbol, { orderId });
-    const trades = Array.isArray(response.data) ? response.data : [];
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const response = await this.client.getAccountTradeList(symbol, { orderId });
+      const trades = Array.isArray(response.data) ? response.data : [];
 
-    return trades.map((trade) => {
-      const record = asRecord(trade);
-      const id = record["id"];
-      return {
-        price: toDecimal128(readString(record, "price") ?? "0"),
-        quantity: toDecimal128(readString(record, "qty") ?? "0"),
-        commission: toDecimal128(readString(record, "commission") ?? "0"),
-        commissionAsset: readString(record, "commissionAsset") ?? "",
-        tradeId: id !== undefined ? String(id) : undefined,
-        timestamp: new Date(),
-      };
-    });
+      if (trades.length > 0) {
+        return trades.map((trade) => {
+          const record = asRecord(trade);
+          const id = record["id"];
+          return {
+            price: toDecimal128(readString(record, "price") ?? "0"),
+            quantity: toDecimal128(readString(record, "qty") ?? "0"),
+            commission: toDecimal128(readString(record, "commission") ?? "0"),
+            commissionAsset: readString(record, "commissionAsset") ?? "",
+            tradeId: id !== undefined ? String(id) : undefined,
+            timestamp: new Date(),
+          };
+        });
+      }
+
+      if (attempt < maxAttempts) {
+        await sleep(300);
+      }
+    }
+    return [];
   }
 
   private async getStepSize(symbol: string): Promise<Decimal> {

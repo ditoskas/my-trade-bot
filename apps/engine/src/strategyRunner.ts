@@ -12,6 +12,7 @@ import {
 import type { Broker, Candle } from "./broker/types";
 import type { EventPublisher } from "./events/redisPublisher";
 import { CapitalLedger } from "./risk/capitalLedger";
+import { checkDrawdownBreaker } from "./risk/drawdownBreaker";
 import { RiskManager } from "./risk/riskManager";
 import type { StrategyAlgorithm, StrategyPositionState } from "./strategy/types";
 
@@ -41,6 +42,17 @@ interface OpenPosition {
 // real money.
 export class StrategyRunner {
   private openPosition: OpenPosition | null = null;
+  // Guards enterPosition/exitPosition, not decide() — the algorithm's
+  // indicator state (e.g. its moving-average window) must still update on
+  // every candle, but two overlapping order actions for the same strategy
+  // must not both start. Without this: if a candle arrives while a prior
+  // enterPosition is still mid-await (broker/DB calls), positionState is
+  // computed from `this.openPosition`, which isn't set until that prior
+  // call finishes — so the new candle could see "flat" and try to enter
+  // again concurrently. Found while doing the Phase 6 hardening pass, not
+  // hit live yet (1-minute candles rarely close before a broker call
+  // returns), but real and worth closing before real capital.
+  private busy = false;
 
   constructor(
     private readonly db: Db,
@@ -66,31 +78,43 @@ export class StrategyRunner {
       return;
     }
 
-    await this.audit("DECISION", { symbol: candle.symbol, signal, close: candle.close.toString() });
+    if (this.busy) {
+      console.warn(
+        `[strategy:${this.strategyDoc.slug}] still processing a previous signal — skipping ${signal} for this candle rather than risk overlapping orders`,
+      );
+      return;
+    }
 
-    // ENTER_LONG/ENTER_SHORT mean "be long/short after this" — if the
-    // opposite side is currently open, that's a flip (exit, then re-enter
-    // the other way), not just "open from flat." See
-    // MovingAverageCrossStrategy's comment for why this matters: without
-    // it, one direction becomes structurally unreachable.
-    if (signal === "ENTER_LONG") {
-      if (positionState.isOpen && positionState.side === "SHORT") {
+    this.busy = true;
+    try {
+      await this.audit("DECISION", { symbol: candle.symbol, signal, close: candle.close.toString() });
+
+      // ENTER_LONG/ENTER_SHORT mean "be long/short after this" — if the
+      // opposite side is currently open, that's a flip (exit, then re-enter
+      // the other way), not just "open from flat." See
+      // MovingAverageCrossStrategy's comment for why this matters: without
+      // it, one direction becomes structurally unreachable.
+      if (signal === "ENTER_LONG") {
+        if (positionState.isOpen && positionState.side === "SHORT") {
+          await this.exitPosition(candle);
+        }
+        if (!this.openPosition) {
+          await this.enterPosition("LONG", candle);
+        }
+      } else if (signal === "ENTER_SHORT") {
+        if (positionState.isOpen && positionState.side === "LONG") {
+          await this.exitPosition(candle);
+        }
+        if (!this.openPosition) {
+          await this.enterPosition("SHORT", candle);
+        }
+      } else if (signal === "EXIT_LONG" && positionState.isOpen && positionState.side === "LONG") {
+        await this.exitPosition(candle);
+      } else if (signal === "EXIT_SHORT" && positionState.isOpen && positionState.side === "SHORT") {
         await this.exitPosition(candle);
       }
-      if (!this.openPosition) {
-        await this.enterPosition("LONG", candle);
-      }
-    } else if (signal === "ENTER_SHORT") {
-      if (positionState.isOpen && positionState.side === "LONG") {
-        await this.exitPosition(candle);
-      }
-      if (!this.openPosition) {
-        await this.enterPosition("SHORT", candle);
-      }
-    } else if (signal === "EXIT_LONG" && positionState.isOpen && positionState.side === "LONG") {
-      await this.exitPosition(candle);
-    } else if (signal === "EXIT_SHORT" && positionState.isOpen && positionState.side === "SHORT") {
-      await this.exitPosition(candle);
+    } finally {
+      this.busy = false;
     }
   }
 
@@ -292,6 +316,16 @@ export class StrategyRunner {
       side: orderSide,
       pnl: netPnl.toString(),
     });
+
+    // Phase 6 circuit breaker: riskLimits.maxDrawdownPct has existed on the
+    // schema since Phase 1 but was never enforced until now.
+    const breached = await checkDrawdownBreaker(this.db, this.strategyDoc);
+    if (breached) {
+      await this.audit("KILL_SWITCH", {
+        reason: "max_drawdown_breached",
+        limitPct: this.strategyDoc.riskLimits.maxDrawdownPct,
+      });
+    }
   }
 
   private async audit(eventType: AuditEventType, payload: Record<string, unknown>): Promise<void> {

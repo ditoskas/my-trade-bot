@@ -1,4 +1,5 @@
 import { closeMongo, connectMongo, ControlApiClient } from "@trade-bot/shared";
+import { startAlertWatcher } from "./alerts";
 import { createBot } from "./bot";
 
 // Phase 5: fixed Telegram command set only, calling the Engine's internal
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
   const connection = await connectMongo(MONGODB_URI);
   const controlApi = new ControlApiClient({ baseUrl: ENGINE_CONTROL_API_URL, token: ENGINE_CONTROL_API_TOKEN });
   const bot = createBot(BOT_TOKEN!, ALLOWED_CHAT_IDS, controlApi, connection.db);
+  const stopAlertWatcher = startAlertWatcher(bot, connection.db, ALLOWED_CHAT_IDS);
 
   let shuttingDown = false;
   const shutdown = async (signal: string): Promise<void> => {
@@ -42,6 +44,7 @@ async function main(): Promise<void> {
     }
     shuttingDown = true;
     console.log(`[chatops] shutting down (${signal})...`);
+    stopAlertWatcher();
     bot.stop(signal);
     await closeMongo(connection);
     process.exit(0);

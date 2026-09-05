@@ -348,9 +348,91 @@ without modification.
     a status check run immediately after sending `/pause` still showed the old state — Telegram's
     long-polling delivery isn't instantaneous, a re-check a few seconds later showed it applied
     correctly. Not a bug, just latency worth expecting when scripting checks against this path.
-- [ ] **Phase 6 — Hardening before real capital.** Security review of secrets/API key scoping,
-  monitoring/alerting on crashes and reconciliation mismatches, then a real paper-trading soak
-  test in the deployed environment before going live with small capital.
+- [~] **Phase 6 — Hardening before real capital.** Code complete and verified live 2026-09-05 for
+  everything except the soak test (see below — that one needs real elapsed time, not something a
+  session can complete). Rather than trying to close every gap flagged in earlier phases, this
+  pass targeted what was actually load-bearing for safety, prioritizing one thing found while
+  reviewing for this phase that was worse than it looked: `reconcile()` had existed since Phase 3
+  but **nothing ever called it automatically** — it only ran from the manual smoke-test scripts.
+  - **`risk/drawdownBreaker.ts`** — `checkDrawdownBreaker()` enforces `riskLimits.maxDrawdownPct`,
+    a field that's existed on the schema since Phase 1 and was never actually enforced until now.
+    Called from `StrategyRunner.exitPosition` after every closed trade; reuses
+    `computeStrategyStats` rather than recomputing drawdown separately. Mutates the same `Strategy`
+    object `StrategyRegistry`/`StrategyRunner` already share (established pattern from Phase 4), so
+    a breach takes effect immediately, no restart.
+  - **A real concurrency bug found and fixed while reviewing `StrategyRunner`**: nothing enforced
+    that two candle events for the same strategy couldn't both start executing an order action
+    before the first finished. If a candle arrived while a prior `enterPosition` was still
+    mid-await (broker/DB calls), `positionState` would be computed from `this.openPosition`, which
+    isn't set until that prior call completes — so the new candle could see "flat" and attempt to
+    enter again concurrently, double-spending the capital ledger and risking a duplicate order.
+    Not hit live yet (1-minute candles rarely close faster than a broker call returns), but real.
+    Fixed with a `busy` guard around the order-execution dispatch — deliberately *not* around
+    `algorithm.decide()` itself, since the algorithm's indicator state (e.g. the moving-average
+    window) must still update every candle; only the resulting action is guarded, and an
+    overlapping signal is dropped (logged) rather than queued.
+  - **Scheduled spot reconciliation** — `apps/engine/src/index.ts` now runs `reconcile()` on an
+    interval (`RECONCILE_INTERVAL_MS`, default 5 min) whenever `BINANCE_API_KEY`/`SECRET` are
+    present, defaulting to testnet (`BINANCE_USE_TESTNET` must be explicitly set to `"false"` to
+    ever point it at a real account — safe-by-default, matching the pattern used throughout).
+    Skips cleanly with a clear log line when no credentials are configured (paper-only mode, the
+    current default). Futures reconciliation still isn't built — `reconcile()` only covers the
+    spot account, unchanged gap from Phase 3b.
+  - **Proactive chatops alerting** — `apps/chatops/src/alerts.ts` (`startAlertWatcher`) polls
+    `audit_log` every 30s for new `KILL_SWITCH`/`RECONCILIATION_MISMATCH` entries and pushes them
+    to every allow-listed chat unprompted. Chatops is the only service holding Telegram
+    credentials, so it's the natural home for this rather than having the engine reach out to
+    Telegram directly.
+  - **`BinanceFuturesBroker` fill-race gap (flagged in Phase 3b) closed**: `getFillsForOrder` now
+    retries up to 3 times (300ms apart) before falling back to the order response's own
+    (potentially stale) data.
+  - **`riskLimits.maxConcurrentPositions`** is not separately enforced — deliberately. Every
+    strategy can only ever hold one position at a time by construction (`enterPosition` requires
+    `!this.openPosition`), so the field is currently unenforceable-because-unreachable rather than
+    unenforced; building a check for a state that can't occur would be dead code. Revisit if a
+    strategy is ever built that can hold multiple simultaneous positions.
+  - **Verified live, not just typechecked**: restarted the engine and confirmed the
+    "spot reconciliation scheduled every 5 min (testnet: true)" log line (real spot testnet keys
+    were already in `.env` from Phase 3). Then, since waiting for the live market to organically
+    breach a drawdown limit isn't practical to verify synchronously, called the real
+    `checkDrawdownBreaker()` directly against `ma-cross-demo`'s actual trade history (temporarily
+    lowering its `maxDrawdownPct` to 1, below its known real ~24.5% drawdown from Phase 4) and
+    confirmed: the function returned `true`, `killSwitchEngaged` flipped and persisted to Mongo,
+    and a `KILL_SWITCH` audit_log entry (mirroring exactly what `StrategyRunner` writes) triggered
+    chatops's alert watcher — confirmed by the operator receiving an **unprompted** Telegram
+    message within the 30s poll window. Original values restored afterward. One operational note
+    hit restarting chatops: Telegram returned a transient `409 Conflict` ("terminated by other
+    getUpdates request") for about 15 seconds after the previous instance stopped — not a real
+    competing process (checked via `Get-CimInstance Win32_Process`, nothing else was running), just
+    Telegram's backend not having released the prior long-poll session yet. Waiting it out and
+    retrying resolved it; not a code bug.
+  - Typechecks and builds clean across the whole workspace after these changes.
+  - **Security review checklist** (procedural — mostly human judgment about real exchange account
+    settings, not something to verify by reading code):
+    - [x] No real-account API keys have ever been placed in this project's `.env` — only spot and
+      futures **testnet** keys, confirmed by the user (see Phase 3/3b transcripts).
+    - [ ] Before any real-account key is ever added: confirm it is trading-only, **no withdrawal
+      permission**, and disable any exchange permission (e.g. futures, if not used) beyond what
+      the account actually trades — flagged once already in Phase 3b regarding an unrelated
+      real-account key, worth re-checking whenever a new key is issued.
+    - [ ] IP-restrict any real-account API key to the machine/server that will actually run the
+      engine, if the exchange supports it.
+    - [ ] Replace `ENGINE_CONTROL_API_TOKEN`'s dev-only placeholder with a real generated secret
+      before running anywhere other than local dev.
+    - [x] `TELEGRAM_ALLOWED_CHAT_IDS` is scoped to the operator only, confirmed via the Phase 5/6
+      live verification (unauthorized messages are silently dropped, never processed).
+    - [x] `.env` is gitignored and was never committed — verified at every phase's commit review
+      in this document.
+    - [ ] Before promoting any strategy past `paper`: do it deliberately one step at a time
+      (`paper` → `live_small` → `live_full`), starting with the smallest `allocatedCapital` that's
+      still meaningful to observe.
+  - **Soak test — honestly out of scope for this session.** "Let the full stack run continuously
+    for an extended period (a day or more) and watch for crashes, memory leaks, missed
+    reconciliation mismatches, and WS-reconnect behavior under real conditions" is inherently an
+    elapsed-time activity. This phase built the monitoring/alerting that makes such a test
+    *observable* (scheduled reconciliation, proactive kill-switch/mismatch alerts) — actually
+    running it is a follow-up the operator needs to let happen over real time, not something
+    completed here. Don't mark this sub-item done without actually having let it run.
 
 ## Repository layout
 

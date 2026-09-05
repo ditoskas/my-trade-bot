@@ -5,6 +5,7 @@ import { startControlApi } from "./controlApi";
 import { EventPublisher } from "./events/redisPublisher";
 import { fetchHistoricalCandles } from "./marketData/binancePublic";
 import { BinanceKlineStream } from "./marketData/binanceKlineStream";
+import { reconcile } from "./reconciliation/reconcile";
 import { StrategyRegistry } from "./registry";
 import { CapitalLedger } from "./risk/capitalLedger";
 import { RiskManager } from "./risk/riskManager";
@@ -27,6 +28,13 @@ const CONTROL_API_PORT = Number(process.env.ENGINE_CONTROL_API_PORT ?? "4001");
 // this port beyond 127.0.0.1 regardless of the token.
 const CONTROL_API_TOKEN = process.env.ENGINE_CONTROL_API_TOKEN ?? "dev-only-insecure-token";
 const STATUS_HEARTBEAT_MS = 30_000;
+// Phase 6: reconcile() (Phase 3) existed but nothing ever called it
+// automatically — it only ran from the manual testnet-smoke scripts. Only
+// covers the spot account (see reconcile.ts); futures reconciliation isn't
+// built. Defaults to testnet — BINANCE_USE_TESTNET must be explicitly set
+// to "false" to ever point this at a real account, never the other way.
+const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 5 * 60_000);
+const BINANCE_USE_TESTNET = process.env.BINANCE_USE_TESTNET !== "false";
 
 interface DemoStrategyDef {
   slug: string;
@@ -133,6 +141,27 @@ async function main(): Promise<void> {
     }
   }, STATUS_HEARTBEAT_MS);
 
+  const binanceApiKey = process.env.BINANCE_API_KEY;
+  const binanceApiSecret = process.env.BINANCE_API_SECRET;
+  let reconcileTimer: ReturnType<typeof setInterval> | undefined;
+  if (binanceApiKey && binanceApiSecret) {
+    reconcileTimer = setInterval(() => {
+      void reconcile(db, { apiKey: binanceApiKey, apiSecret: binanceApiSecret, useTestnet: BINANCE_USE_TESTNET })
+        .then((mismatches) => {
+          if (mismatches.length > 0) {
+            console.warn(`[engine] reconciliation found ${mismatches.length} mismatch(es):`, mismatches);
+          }
+        })
+        .catch((error: unknown) => console.error("[engine] reconciliation failed:", (error as Error).message));
+    }, RECONCILE_INTERVAL_MS);
+    console.log(
+      `[engine] spot reconciliation scheduled every ${RECONCILE_INTERVAL_MS / 60_000} min ` +
+        `(testnet: ${BINANCE_USE_TESTNET})`,
+    );
+  } else {
+    console.log("[engine] BINANCE_API_KEY/SECRET not set — spot reconciliation disabled (no real account to check)");
+  }
+
   let shuttingDown = false;
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) {
@@ -141,6 +170,9 @@ async function main(): Promise<void> {
     shuttingDown = true;
     console.log("[engine] shutting down...");
     clearInterval(heartbeat);
+    if (reconcileTimer) {
+      clearInterval(reconcileTimer);
+    }
     registry.stopAll();
     controlApiServer.close();
     await publisher.close();
