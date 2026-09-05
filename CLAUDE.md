@@ -318,9 +318,8 @@ without modification.
     afterward. One hydration console warning observed on the list page is a false positive
     (`cz-shortcut-listen` attribute from a browser extension injecting into the DOM before React
     hydrates), not a real defect — noted, not fixed, since there's nothing in this codebase to fix.
-- [~] **Phase 5 — Chatops (fixed commands).** Code complete 2026-09-05, **live Telegram
-  verification pending** (needs `TELEGRAM_BOT_TOKEN`/`TELEGRAM_ALLOWED_CHAT_IDS`). MCP/NL layer on
-  top of this is separate future work, not started.
+- [x] **Phase 5 — Chatops (fixed commands).** Done 2026-09-05, verified live against a real
+  Telegram bot. MCP/NL layer on top of this is separate future work, not started.
   - `apps/chatops/src/bot.ts` — `createBot()`, using `telegraf` (long polling, not a webhook — no
     public HTTPS endpoint needed for this). Commands: `/status`, `/pause`, `/resume`, `/kill`,
     `/unkill` (all via the shared `ControlApiClient`, same client `apps/ui`'s proxy route uses —
@@ -341,8 +340,14 @@ without modification.
     callback instead, or the "running" log would only ever print after shutdown.
   - Typechecks clean across `packages/shared`, `apps/engine` (re-verified after the shared
     refactor), and `apps/chatops`; `apps/ui` re-lints/rebuilds clean too.
-  - **Outstanding**: nobody has run this against a real Telegram bot yet — needs a bot token from
-    @BotFather and the operator's chat ID.
+  - **Verified live** 2026-09-05: bot connected to Telegram (long polling) and authorized-chat
+    replies confirmed for `/status` (listed both demo strategies), `/report ma-cross-demo` (stats
+    from Mongo), and `/pause ma-cross-demo-eth` — the last one confirmed not just by the bot's
+    reply but by checking `GET /status` on the engine directly and seeing `lifecycleState:
+    "paused"` persisted, then resumed afterward to restore a clean running state. One process note:
+    a status check run immediately after sending `/pause` still showed the old state — Telegram's
+    long-polling delivery isn't instantaneous, a re-check a few seconds later showed it applied
+    correctly. Not a bug, just latency worth expecting when scripting checks against this path.
 - [ ] **Phase 6 — Hardening before real capital.** Security review of secrets/API key scoping,
   monitoring/alerting on crashes and reconciliation mismatches, then a real paper-trading soak
   test in the deployed environment before going live with small capital.
