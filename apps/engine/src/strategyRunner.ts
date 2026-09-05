@@ -9,10 +9,11 @@ import {
   type AuditEventType,
   type Strategy,
 } from "@trade-bot/shared";
-import type { Broker, Candle } from "./broker/types.js";
-import { CapitalLedger } from "./risk/capitalLedger.js";
-import { RiskManager } from "./risk/riskManager.js";
-import type { StrategyAlgorithm, StrategyPositionState } from "./strategy/types.js";
+import type { Broker, Candle } from "./broker/types";
+import type { EventPublisher } from "./events/redisPublisher";
+import { CapitalLedger } from "./risk/capitalLedger";
+import { RiskManager } from "./risk/riskManager";
+import type { StrategyAlgorithm, StrategyPositionState } from "./strategy/types";
 
 type PositionSide = "LONG" | "SHORT";
 
@@ -48,6 +49,9 @@ export class StrategyRunner {
     private readonly broker: Broker,
     private readonly riskManager: RiskManager,
     private readonly capitalLedger: CapitalLedger,
+    // Optional — a strategy still runs correctly with no live dashboard
+    // feed at all (see EventPublisher.connect's fail-open behavior).
+    private readonly publisher?: EventPublisher,
   ) {}
 
   async onCandle(candle: Candle): Promise<void> {
@@ -298,6 +302,16 @@ export class StrategyRunner {
       source: "engine",
       payload,
       timestamp: new Date(),
+    });
+    // Same call site as the Mongo write (audit_log is the durable record,
+    // this is just the live feed) — every DECISION/ORDER_INTENT/
+    // ORDER_FILLED/RISK_BLOCK reaches the dashboard exactly where it
+    // reaches Mongo, nothing to keep in sync separately.
+    await this.publisher?.publish({
+      type: eventType,
+      strategyId: this.strategyDoc._id.toHexString(),
+      strategySlug: this.strategyDoc.slug,
+      payload,
     });
   }
 }

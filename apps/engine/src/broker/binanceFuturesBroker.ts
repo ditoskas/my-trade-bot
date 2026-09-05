@@ -1,8 +1,8 @@
 import { UMFutures } from "@binance/futures-connector";
 import { Decimal } from "decimal.js";
 import { fromDecimalJs, toDecimal128, toDecimalJs, type MarginMode } from "@trade-bot/shared";
-import { mapOrderStatus } from "./orderStatus.js";
-import type { Broker, OrderResult, PlaceOrderRequest } from "./types.js";
+import { mapOrderStatus } from "./orderStatus";
+import type { Broker, OrderResult, PlaceOrderRequest } from "./types";
 
 export interface BinanceFuturesBrokerOptions {
   apiKey: string;

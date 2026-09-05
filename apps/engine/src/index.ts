@@ -1,49 +1,67 @@
 import { ObjectId, type Db } from "mongodb";
-import {
-  closeMongo,
-  connectMongo,
-  ensureIndexes,
-  strategiesCollection,
-  toDecimal128,
-  tradesCollection,
-  type Strategy,
-} from "@trade-bot/shared";
-import { PaperBroker } from "./broker/paperBroker.js";
-import type { Candle } from "./broker/types.js";
-import { fetchHistoricalCandles } from "./marketData/binancePublic.js";
-import { generateSyntheticCandles } from "./marketData/syntheticCandles.js";
-import { CapitalLedger } from "./risk/capitalLedger.js";
-import { RiskManager } from "./risk/riskManager.js";
-import { MovingAverageCrossStrategy } from "./strategy/movingAverageCross.js";
-import { StrategyRunner } from "./strategyRunner.js";
+import { closeMongo, connectMongo, ensureIndexes, strategiesCollection, toDecimal128, type Strategy } from "@trade-bot/shared";
+import { PaperBroker } from "./broker/paperBroker";
+import { startControlApi } from "./controlApi";
+import { EventPublisher } from "./events/redisPublisher";
+import { fetchHistoricalCandles } from "./marketData/binancePublic";
+import { BinanceKlineStream } from "./marketData/binanceKlineStream";
+import { StrategyRegistry } from "./registry";
+import { CapitalLedger } from "./risk/capitalLedger";
+import { RiskManager } from "./risk/riskManager";
+import { MovingAverageCrossStrategy } from "./strategy/movingAverageCross";
+import { warmUpAlgorithm } from "./strategy/warmUp";
+import { StrategyRunner } from "./strategyRunner";
 
-// Phase 2/3b proof-of-pipeline run: load real (or, if unreachable, synthetic)
-// candles, feed them through one paper strategy (now long/short with
-// leverage, per Phase 3b's futures pivot), print the resulting trades.
-// Phase 3 replaces the one-shot candle load with a live WebSocket feed and
-// swaps PaperBroker for a real broker; Phase 4/5 add the dashboard and
-// chatops on top. See CLAUDE.md for the full phase plan.
+// Phase 4: the engine is now a genuinely long-running process — candles
+// arrive from a live Binance WebSocket stream (marketData/
+// binanceKlineStream.ts), strategies keep running until the process is
+// stopped, and an internal HTTP API (controlApi.ts) exposes pause/resume/
+// kill for the Phase 4 dashboard (and, later, Phase 5 chatops) to call.
+// Before this phase, index.ts was a one-shot script that replayed a fixed
+// batch of historical candles and exited — see CLAUDE.md Phase 2/3b.
 
-const SYMBOL = "BTCUSDT";
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://localhost:27017/trade-bot-dev";
+const REDIS_URL = process.env.REDIS_URL ?? "redis://localhost:6379";
+const CONTROL_API_PORT = Number(process.env.ENGINE_CONTROL_API_PORT ?? "4001");
+// Dev-only default — real deployments must set a real secret. Never expose
+// this port beyond 127.0.0.1 regardless of the token.
+const CONTROL_API_TOKEN = process.env.ENGINE_CONTROL_API_TOKEN ?? "dev-only-insecure-token";
+const STATUS_HEARTBEAT_MS = 30_000;
 
-async function getOrCreateDemoStrategy(db: Db): Promise<Strategy> {
-  const slug = "ma-cross-demo";
-  const existing = await strategiesCollection(db).findOne({ slug });
+interface DemoStrategyDef {
+  slug: string;
+  name: string;
+  symbol: string;
+  interval: string;
+  fastPeriod: number;
+  slowPeriod: number;
+}
+
+// Two strategies, two symbols — proves the dashboard actually renders a
+// *list* with independently running/paused/killed state, not just one.
+// A real strategy catalog would live in Mongo already; these are seeded
+// here only because nothing yet creates strategies any other way (no admin
+// UI, no Phase 5 chatops).
+const DEMO_STRATEGIES: DemoStrategyDef[] = [
+  { slug: "ma-cross-demo", name: "MA Cross Demo (BTCUSDT, paper)", symbol: "BTCUSDT", interval: "1m", fastPeriod: 5, slowPeriod: 20 },
+  { slug: "ma-cross-demo-eth", name: "MA Cross Demo (ETHUSDT, paper)", symbol: "ETHUSDT", interval: "1m", fastPeriod: 5, slowPeriod: 20 },
+];
+
+async function getOrCreateStrategy(db: Db, def: DemoStrategyDef): Promise<Strategy> {
+  const existing = await strategiesCollection(db).findOne({ slug: def.slug });
   if (existing) {
     return existing;
   }
 
   const doc: Strategy = {
     _id: new ObjectId(),
-    slug,
-    name: "MA Cross Demo (paper)",
-    description:
-      "Phase 2/3b proof-of-pipeline strategy — 5/20 period SMA cross on BTCUSDT, long or short, 3x leverage.",
-    version: 2,
+    slug: def.slug,
+    name: def.name,
+    description: `Phase 4 live-dashboard demo — ${def.fastPeriod}/${def.slowPeriod} period SMA cross on ${def.symbol}, long or short, 3x leverage.`,
+    version: 1,
     lifecycleState: "paper",
     broker: "paper",
-    symbols: [SYMBOL],
+    symbols: [def.symbol],
     allocatedCapital: toDecimal128("1000"),
     allocatedCapitalAsset: "USDT",
     riskLimits: {
@@ -52,7 +70,7 @@ async function getOrCreateDemoStrategy(db: Db): Promise<Strategy> {
       maxDrawdownPct: 20,
       maxLeverage: 3,
     },
-    config: { fastPeriod: 5, slowPeriod: 20 },
+    config: { fastPeriod: def.fastPeriod, slowPeriod: def.slowPeriod },
     killSwitchEngaged: false,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -61,58 +79,78 @@ async function getOrCreateDemoStrategy(db: Db): Promise<Strategy> {
   return doc;
 }
 
-async function loadCandles(): Promise<Candle[]> {
-  try {
-    const candles = await fetchHistoricalCandles(SYMBOL, "1h", 200);
-    console.log(`[engine] loaded ${candles.length} real ${SYMBOL} candles from Binance's public API`);
-    return candles;
-  } catch (error) {
-    console.warn(
-      `[engine] couldn't reach Binance's public API (${(error as Error).message}) — using synthetic candles instead`,
-    );
-    return generateSyntheticCandles(SYMBOL, 200);
-  }
-}
-
 async function main(): Promise<void> {
   const connection = await connectMongo(MONGODB_URI);
   const { db } = connection;
+  await ensureIndexes(db);
 
-  try {
-    await ensureIndexes(db);
-    const strategyDoc = await getOrCreateDemoStrategy(db);
+  const publisher = await EventPublisher.connect(REDIS_URL);
+  const registry = new StrategyRegistry(db);
+
+  for (const def of DEMO_STRATEGIES) {
+    const doc = await getOrCreateStrategy(db, def);
+    const algorithm = new MovingAverageCrossStrategy(def.symbol, def.fastPeriod, def.slowPeriod);
+
+    try {
+      const history = await fetchHistoricalCandles(def.symbol, def.interval, def.slowPeriod);
+      warmUpAlgorithm(algorithm, history);
+      console.log(`[engine] warmed up "${doc.slug}" with ${history.length} historical candles`);
+    } catch (error) {
+      console.warn(`[engine] couldn't warm up "${doc.slug}" (${(error as Error).message}) — starting cold`);
+    }
 
     const broker = new PaperBroker();
-    const runner = new StrategyRunner(
-      db,
-      strategyDoc,
-      new MovingAverageCrossStrategy(SYMBOL, 5, 20),
-      broker,
-      new RiskManager(),
-      new CapitalLedger(db),
-    );
+    const runner = new StrategyRunner(db, doc, algorithm, broker, new RiskManager(), new CapitalLedger(db), publisher);
 
-    const candles = await loadCandles();
-    for (const candle of candles) {
-      broker.setPrice(candle.symbol, candle.close);
-      await runner.onCandle(candle);
-    }
+    const stream = new BinanceKlineStream({
+      symbol: def.symbol,
+      interval: def.interval,
+      onClosedCandle: async (candle) => {
+        broker.setPrice(candle.symbol, candle.close);
+        await runner.onCandle(candle);
+      },
+      onError: (error) => console.error(`[engine] ${def.symbol} stream error:`, error.message),
+    });
+    stream.start();
 
-    const trades = await tradesCollection(db)
-      .find({ strategyId: strategyDoc._id })
-      .sort({ exitTime: 1 })
-      .toArray();
-
-    console.log(`[engine] pipeline run complete — ${trades.length} closed trade(s) for "${strategyDoc.slug}"`);
-    for (const trade of trades) {
-      console.log(
-        `  ${trade.entryTime.toISOString()} -> ${trade.exitTime.toISOString()}` +
-          ` | qty ${trade.quantity.toString()} | pnl ${trade.pnl.toString()} (${trade.pnlPct.toFixed(2)}%)`,
-      );
-    }
-  } finally {
-    await closeMongo(connection);
+    registry.register({ doc, runner, stream });
+    console.log(`[engine] strategy "${doc.slug}" live on ${def.symbol} (${def.interval} candles)`);
   }
+
+  const controlApiServer = startControlApi({ port: CONTROL_API_PORT, authToken: CONTROL_API_TOKEN, registry });
+
+  const heartbeat = setInterval(() => {
+    for (const entry of registry.list()) {
+      void publisher.publish({
+        type: "STATUS",
+        strategyId: entry.doc._id.toHexString(),
+        strategySlug: entry.doc.slug,
+        payload: {
+          lifecycleState: entry.doc.lifecycleState,
+          killSwitchEngaged: entry.doc.killSwitchEngaged,
+        },
+      });
+    }
+  }, STATUS_HEARTBEAT_MS);
+
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    console.log("[engine] shutting down...");
+    clearInterval(heartbeat);
+    registry.stopAll();
+    controlApiServer.close();
+    await publisher.close();
+    await closeMongo(connection);
+    process.exit(0);
+  };
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
+
+  console.log("[engine] running — press Ctrl+C to stop");
 }
 
 main().catch((error: unknown) => {

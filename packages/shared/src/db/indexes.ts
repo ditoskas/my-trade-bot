@@ -1,5 +1,5 @@
 import type { Db } from "mongodb";
-import { COLLECTION_NAMES } from "./collections.js";
+import { COLLECTION_NAMES } from "./collections";
 
 // Idempotent — safe to call on every app startup, not just once.
 export async function ensureIndexes(db: Db): Promise<void> {

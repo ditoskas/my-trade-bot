@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Decimal128 } from "mongodb";
 import { Decimal } from "decimal.js";
 import { fromDecimalJs, toDecimalJs } from "@trade-bot/shared";
-import type { Broker, OrderResult, PlaceOrderRequest } from "./types.js";
+import type { Broker, OrderResult, PlaceOrderRequest } from "./types";
 
 export interface PaperBrokerOptions {
   // Default matches Binance's standard 0.1% taker fee.

@@ -1,5 +1,5 @@
 import type { Decimal128 } from "mongodb";
-import type { Candle } from "../broker/types.js";
+import type { Candle } from "../broker/types";
 
 // SHORT support added in Phase 3b (futures) — spot couldn't short, so
 // ENTER_LONG/EXIT_LONG were the whole set before that.

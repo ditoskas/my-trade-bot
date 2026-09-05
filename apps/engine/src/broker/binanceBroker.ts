@@ -1,8 +1,8 @@
 import { Spot, SpotRestAPI, SPOT_REST_API_PROD_URL, SPOT_REST_API_TESTNET_URL } from "@binance/spot";
 import { Decimal } from "decimal.js";
 import { toDecimal128, toDecimalJs } from "@trade-bot/shared";
-import { mapOrderStatus } from "./orderStatus.js";
-import type { Broker, OrderResult, PlaceOrderRequest } from "./types.js";
+import { mapOrderStatus } from "./orderStatus";
+import type { Broker, OrderResult, PlaceOrderRequest } from "./types";
 
 export interface BinanceBrokerOptions {
   apiKey: string;

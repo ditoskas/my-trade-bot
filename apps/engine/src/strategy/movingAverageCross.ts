@@ -1,7 +1,7 @@
 import { Decimal } from "decimal.js";
 import { toDecimalJs } from "@trade-bot/shared";
-import type { Candle } from "../broker/types.js";
-import type { StrategyAlgorithm, StrategyPositionState, StrategySignal } from "./types.js";
+import type { Candle } from "../broker/types";
+import type { StrategyAlgorithm, StrategyPositionState, StrategySignal } from "./types";
 
 function average(values: Decimal[]): Decimal {
   return values.reduce((sum, value) => sum.plus(value), new Decimal(0)).div(values.length);

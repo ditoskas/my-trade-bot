@@ -2,7 +2,7 @@ import { Spot, SPOT_REST_API_PROD_URL, SPOT_REST_API_TESTNET_URL } from "@binanc
 import { Decimal } from "decimal.js";
 import { ObjectId, type Db } from "mongodb";
 import { auditLogCollection, ordersCollection, strategiesCollection } from "@trade-bot/shared";
-import { CapitalLedger } from "../risk/capitalLedger.js";
+import { CapitalLedger } from "../risk/capitalLedger";
 
 export interface ReconciliationOptions {
   apiKey: string;

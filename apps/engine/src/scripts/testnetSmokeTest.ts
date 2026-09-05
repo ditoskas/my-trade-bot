@@ -6,8 +6,8 @@
 // https://testnet.binance.vision, not a real account) in .env or the shell.
 // Hardcoded useTestnet: true below — never point this script at mainnet.
 import { closeMongo, connectMongo, ensureIndexes, toDecimal128 } from "@trade-bot/shared";
-import { BinanceBroker } from "../broker/binanceBroker.js";
-import { reconcile } from "../reconciliation/reconcile.js";
+import { BinanceBroker } from "../broker/binanceBroker";
+import { reconcile } from "../reconciliation/reconcile";
 
 const apiKey = process.env.BINANCE_API_KEY;
 const apiSecret = process.env.BINANCE_API_SECRET;

@@ -1,5 +1,5 @@
 import { toDecimal128 } from "@trade-bot/shared";
-import type { Candle } from "../broker/types.js";
+import type { Candle } from "../broker/types";
 
 // Deterministic-ish up-then-down price path, used only when the Binance
 // public klines endpoint is unreachable — keeps the Phase 2 pipeline demo

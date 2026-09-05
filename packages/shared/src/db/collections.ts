@@ -1,11 +1,11 @@
 import type { Collection, Db } from "mongodb";
-import type { Strategy } from "../models/strategy.js";
-import type { Order } from "../models/order.js";
-import type { Trade } from "../models/trade.js";
-import type { EquitySnapshot } from "../models/equitySnapshot.js";
-import type { CapitalLedgerEntry } from "../models/capitalAllocation.js";
-import type { AuditLogEntry } from "../models/auditLog.js";
-import type { ChatopsCommand } from "../models/command.js";
+import type { Strategy } from "../models/strategy";
+import type { Order } from "../models/order";
+import type { Trade } from "../models/trade";
+import type { EquitySnapshot } from "../models/equitySnapshot";
+import type { CapitalLedgerEntry } from "../models/capitalAllocation";
+import type { AuditLogEntry } from "../models/auditLog";
+import type { ChatopsCommand } from "../models/command";
 
 export const COLLECTION_NAMES = {
   strategies: "strategies",

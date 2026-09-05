@@ -1,5 +1,5 @@
 import { toDecimal128 } from "@trade-bot/shared";
-import type { Candle } from "../broker/types.js";
+import type { Candle } from "../broker/types";
 
 // Binance's public klines endpoint needs no API key — it's read-only market
 // data, not trading capability, so fetching it here doesn't touch the

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "testnet-smoke": "tsx src/scripts/testnetSmokeTest.ts",
     "futures-testnet-smoke": "tsx src/scripts/futuresTestnetSmokeTest.ts"
@@ -16,10 +16,11 @@
     "@binance/spot": "^32",
     "@trade-bot/shared": "*",
     "decimal.js": "^10",
-    "mongodb": "^6"
+    "mongodb": "^6",
+    "redis": "^6"
   },
   "devDependencies": {
-    "@types/node": "^20",
+    "@types/node": "^22",
     "tsx": "^4",
     "typescript": "^5"
   }

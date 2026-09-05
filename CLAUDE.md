@@ -243,9 +243,81 @@ without modification.
     order response only if fills comes back empty. That fallback path is itself a known remaining
     race-condition gap (if the trade list hasn't caught up yet when queried) — a retry/poll loop
     would close it, not built yet, worth doing before this is trusted with real money.
-- [ ] **Phase 4 — Live dashboard.** Redis pub/sub → WS/SSE bridge → Next.js pages: strategy
-  list/state, per-strategy stats (Sharpe, max drawdown, win rate, profit factor), trade log, kill
-  switch.
+- [x] **Phase 4 — Live dashboard.** Done 2026-09-05, verified live in a real browser.
+  - **The engine became a genuinely long-running process.** Before this it was a one-shot script
+    that replayed a fixed candle batch and exited (Phase 2/3b). `apps/engine/src/index.ts` now
+    seeds two demo strategies (BTCUSDT + ETHUSDT — proves the dashboard renders a real *list*, not
+    one row), stays alive until stopped, and handles SIGINT/SIGTERM cleanly.
+  - `marketData/binanceKlineStream.ts` — real live candles via Binance's public kline
+    **WebSocket** (`wss://stream.binance.com`), using Node's built-in global `WebSocket` (Node 22+,
+    confirmed working here — no extra dependency). Reconnects with exponential backoff (capped
+    30s). Known gap: candles missed while disconnected aren't backfilled.
+  - `strategy/warmUp.ts` — feeds recent historical candles into a strategy's `decide()` before the
+    live stream starts, discarding the signals, purely to prime a rolling window (e.g. the 20-period
+    SMA) so the strategy isn't idle for 20 live minutes after every restart.
+  - `events/redisPublisher.ts` — `EventPublisher`, fails open (logs a warning, no-ops) if Redis is
+    unreachable at startup, so a dashboard-only dependency being down can never take trading down
+    with it. Wired into `StrategyRunner`'s existing `audit()` call site — every event that reaches
+    `audit_log` reaches the live feed too, nothing to keep in sync separately. `index.ts` also
+    publishes a `STATUS` heartbeat every 30s per strategy so "is it running" is visible even between
+    trades.
+  - `registry.ts` (`StrategyRegistry`) + `controlApi.ts` — the internal HTTP API from CLAUDE.md's
+    Engine section, bound to `127.0.0.1` only, gated by a shared-secret bearer token
+    (`ENGINE_CONTROL_API_TOKEN`). `GET /status`, `POST /strategies/:slug/{pause,resume,kill,unkill}`.
+    Control actions mutate the same `Strategy` object instance `StrategyRunner` already holds a
+    reference to (not a copy) — a pause/kill takes effect on the very next candle with no restart,
+    because `RiskManager.checkCanEnter` reads those fields fresh every call.
+  - `apps/ui` (Next.js dashboard): `app/page.tsx` (strategy list, live via SSE), `app/strategies/
+    [slug]/page.tsx` (stats + trade log + controls), `app/api/stream/route.ts` (SSE bridge — one
+    Redis subscriber per browser tab, chosen over a separate WebSocket/Socket.io server since a
+    Route Handler can stream natively), `app/api/strategies/[slug]/[action]/route.ts` (server-side
+    proxy to the Engine's control API — the browser never sees the engine's token or port).
+    `lib/stats.ts` computes win rate / profit factor / max drawdown / a Sharpe-*like* ratio
+    (explicitly not a proper annualized Sharpe — no consistent return-period assumption exists
+    across trades of varying duration).
+  - **Three real bugs found and fixed during this phase, in the order hit:**
+    1. **Turbopack couldn't resolve `packages/shared`'s internal imports.** They used the
+       Node/TS NodeNext convention of writing a `.js` extension for a file that's actually `.ts`
+       (valid under `tsc`, resolved fine by `tsx`) — but Turbopack's `transpilePackages` handling
+       doesn't resolve that pattern, failing with "module has no exported member" for every single
+       export. Fixing `packages/shared` alone (stripping the extensions, switching its tsconfig to
+       `moduleResolution: "bundler"`) then broke `apps/engine`'s own typecheck, because without
+       TS project references, a single `tsc` invocation resolves *every* file it pulls in —
+       including `packages/shared`'s — using the **invoking project's** compiler options, not the
+       target file's own tsconfig. Real fix: the whole monorepo (`packages/shared`, `apps/engine`,
+       `apps/chatops`) now uses `module: "ESNext"` / `moduleResolution: "bundler"` with
+       extensionless relative imports throughout — the one convention `tsc`, `tsx`, and Turbopack
+       all agree on. Consequence: `apps/engine`/`apps/chatops`'s `"start"` script now runs via
+       `tsx` instead of `node dist/index.js` — plain Node's ESM loader requires explicit
+       extensions that a `tsc`-emitted extensionless-import build wouldn't have. A real compiled
+       Node-ESM production build is deferred to Phase 6 (no deployment story exists yet anyway);
+       `"build": "tsc"` still exists and still catches type errors, its output just isn't run
+       directly right now.
+    2. **Max drawdown showed a nonsensical "2099.9%."** The formula measured drawdown against the
+       strategy's own cumulative-PnL peak starting from 0 — which blows up the moment that peak is
+       a tiny positive number early on, since any later loss is enormous *relative to that peak*
+       even though it's small relative to real capital. Fixed by anchoring the equity curve at the
+       strategy's actual `allocatedCapital` instead of 0, so the denominator is stable and the
+       result reads correctly (24.5%, on the real 12-trade demo history) — this is a case that only
+       showed up by actually looking at the rendered number, not from typechecking or a unit test.
+    3. **The kill-switch button used `window.confirm()`**, a native dialog that blocks the page's
+       own event loop (including its SSE listener) for as long as it's open — the wrong trade-off
+       for a live trading control, and it also blocks browser-automation testing outright. Replaced
+       with an in-page arm-then-confirm pattern (`StrategyControls.tsx`): first click arms for 4s
+       and shows "Click again to confirm," second click within that window executes, otherwise it
+       disarms. No native dialogs anywhere in the app now (`alert()` calls replaced with inline
+       error text too).
+  - **Verified live**: engine running as a real background process with both demo strategies
+    streaming live 1-minute candles; dashboard loaded in an actual Chrome tab (via claude-in-chrome)
+    showing both strategies with live SSE status updates (heartbeat visibly arriving, "STATUS ·
+    <time>" updating with no page refresh); clicked into a strategy detail page and confirmed real
+    stats/trade log rendering; clicked Pause → confirmed engine state flipped to `paused` (checked
+    both in the UI and via direct `GET /status`) and the button flipped to Resume; armed and
+    confirmed the kill switch → confirmed `killSwitchEngaged: true` at the engine and reflected on
+    both the detail page and the list page; restored both strategies to a clean running state
+    afterward. One hydration console warning observed on the list page is a false positive
+    (`cz-shortcut-listen` attribute from a browser extension injecting into the DOM before React
+    hydrates), not a real defect — noted, not fixed, since there's nothing in this codebase to fix.
 - [ ] **Phase 5 — Chatops.** Fixed Telegram commands first, calling Engine's internal API; MCP/NL
   layer added afterward with an allow-list and confirmation step.
 - [ ] **Phase 6 — Hardening before real capital.** Security review of secrets/API key scoping,
@@ -257,11 +329,20 @@ without modification.
 npm workspaces at the repo root:
 
 - `apps/ui` — the Next.js dashboard (App Router, React 19, TypeScript strict, Tailwind v4
-  CSS-first). No trading-bot UI yet, just the `create-next-app` default page.
-- `apps/engine` — trading engine (placeholder entrypoint only; see Phase 2/3).
+  CSS-first). Live: strategy list (`app/page.tsx`), strategy detail with stats/trade log/controls
+  (`app/strategies/[slug]/`), SSE bridge (`app/api/stream`), control-API proxy
+  (`app/api/strategies/[slug]/[action]`), Mongo/Redis/stats helpers in `lib/`.
+- `apps/engine` — the trading engine. Long-running (Phase 4) — see its own section above for the
+  full breakdown (`broker/`, `strategy/`, `marketData/`, `risk/`, `events/`, `reconciliation/`,
+  `registry.ts`, `controlApi.ts`, `strategyRunner.ts`, `index.ts`).
 - `apps/chatops` — Telegram bot service (placeholder entrypoint only; see Phase 5).
-- `packages/shared` — cross-app types and the `Broker` interface (empty placeholder; see Phase 2).
+- `packages/shared` — cross-app types, the Mongo data layer, and money helpers (see Phase 1/2).
 - `docker-compose.yml` — local Mongo + Redis for dev.
+
+**Module resolution note** (see Phase 4's first bug): every package uses `module: "ESNext"` /
+`moduleResolution: "bundler"` with **extensionless relative imports** — not the NodeNext `.js`
+convention. This is deliberate and load-bearing: it's the one convention `tsc`, `tsx`, and
+Next.js's Turbopack all agree on. Don't "fix" imports by adding `.js` extensions.
 
 ## Commands
 
@@ -272,14 +353,22 @@ npm run dev --workspace=@trade-bot/ui          # Next.js dev server (http://loca
 npm run build --workspace=@trade-bot/ui
 npm run lint --workspace=@trade-bot/ui
 
-npm run dev --workspace=@trade-bot/engine       # tsx watch
+npm run dev --workspace=@trade-bot/engine       # tsx watch — long-running, seeds/streams demo strategies
+npm run start --workspace=@trade-bot/engine     # same, via tsx (not node dist/, see module resolution note)
 npm run typecheck --workspace=@trade-bot/engine
+npm run testnet-smoke --workspace=@trade-bot/engine           # needs BINANCE_API_KEY/SECRET (spot testnet)
+npm run futures-testnet-smoke --workspace=@trade-bot/engine   # needs BINANCE_FUTURES_API_KEY/SECRET (futures testnet)
 
 npm run dev --workspace=@trade-bot/chatops      # tsx watch
 npm run typecheck --workspace=@trade-bot/chatops
 
 docker compose up -d                            # local Mongo (27017) + Redis (6379)
 ```
+
+Engine env vars beyond `MONGODB_URI`/`REDIS_URL`: `ENGINE_CONTROL_API_PORT` (default 4001),
+`ENGINE_CONTROL_API_TOKEN` (default is a dev-only placeholder — set a real one outside local dev).
+The UI reads the same two (`ENGINE_CONTROL_API_URL`, `ENGINE_CONTROL_API_TOKEN`) to reach the
+engine's control API server-side.
 
 No test runner is configured yet.
 

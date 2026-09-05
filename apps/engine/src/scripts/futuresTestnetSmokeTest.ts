@@ -7,7 +7,7 @@
 // spot testnet) in .env or the shell. Hardcoded useTestnet: true below —
 // never point this script at mainnet.
 import { toDecimal128 } from "@trade-bot/shared";
-import { BinanceFuturesBroker } from "../broker/binanceFuturesBroker.js";
+import { BinanceFuturesBroker } from "../broker/binanceFuturesBroker";
 
 const apiKey = process.env.BINANCE_FUTURES_API_KEY;
 const apiSecret = process.env.BINANCE_FUTURES_API_SECRET;
