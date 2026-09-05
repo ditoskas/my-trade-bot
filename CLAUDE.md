@@ -318,8 +318,31 @@ without modification.
     afterward. One hydration console warning observed on the list page is a false positive
     (`cz-shortcut-listen` attribute from a browser extension injecting into the DOM before React
     hydrates), not a real defect — noted, not fixed, since there's nothing in this codebase to fix.
-- [ ] **Phase 5 — Chatops.** Fixed Telegram commands first, calling Engine's internal API; MCP/NL
-  layer added afterward with an allow-list and confirmation step.
+- [~] **Phase 5 — Chatops (fixed commands).** Code complete 2026-09-05, **live Telegram
+  verification pending** (needs `TELEGRAM_BOT_TOKEN`/`TELEGRAM_ALLOWED_CHAT_IDS`). MCP/NL layer on
+  top of this is separate future work, not started.
+  - `apps/chatops/src/bot.ts` — `createBot()`, using `telegraf` (long polling, not a webhook — no
+    public HTTPS endpoint needed for this). Commands: `/status`, `/pause`, `/resume`, `/kill`,
+    `/unkill` (all via the shared `ControlApiClient`, same client `apps/ui`'s proxy route uses —
+    see the `packages/shared` refactor below), and `/report <slug>` (reads Mongo directly —
+    `strategiesCollection`/`tradesCollection` — and reuses `computeStrategyStats`, also moved to
+    `packages/shared` this phase). No LLM/MCP anywhere in this path, per CLAUDE.md's non-negotiable
+    policies — chatops only ever calls the same small, fixed action set the dashboard does.
+  - **Authorization gate, not optional**: `index.ts` refuses to start at all without at least one
+    entry in `TELEGRAM_ALLOWED_CHAT_IDS`. A `bot.use()` middleware checks every incoming message's
+    chat ID against that allow-list and silently drops anything else (no reply at all) — a stranger
+    who finds the bot token learns nothing about what it does or that a command even exists.
+  - **Refactor while building this**: `computeStrategyStats` (was `apps/ui/lib/stats.ts`) and a new
+    `ControlApiClient` both moved into `packages/shared`, since both `apps/ui` and `apps/chatops`
+    need identical logic — `apps/ui`'s control-API proxy route now uses `ControlApiClient` too
+    instead of its own hand-rolled fetch wrapper. One real gotcha hit doing this: `bot.launch()`'s
+    returned promise resolves only when the bot *stops* (it's the long-polling loop itself, not a
+    one-time connect step) — `index.ts` deliberately does not `await` it, using the `onLaunch`
+    callback instead, or the "running" log would only ever print after shutdown.
+  - Typechecks clean across `packages/shared`, `apps/engine` (re-verified after the shared
+    refactor), and `apps/chatops`; `apps/ui` re-lints/rebuilds clean too.
+  - **Outstanding**: nobody has run this against a real Telegram bot yet — needs a bot token from
+    @BotFather and the operator's chat ID.
 - [ ] **Phase 6 — Hardening before real capital.** Security review of secrets/API key scoping,
   monitoring/alerting on crashes and reconciliation mismatches, then a real paper-trading soak
   test in the deployed environment before going live with small capital.
@@ -335,8 +358,9 @@ npm workspaces at the repo root:
 - `apps/engine` — the trading engine. Long-running (Phase 4) — see its own section above for the
   full breakdown (`broker/`, `strategy/`, `marketData/`, `risk/`, `events/`, `reconciliation/`,
   `registry.ts`, `controlApi.ts`, `strategyRunner.ts`, `index.ts`).
-- `apps/chatops` — Telegram bot service (placeholder entrypoint only; see Phase 5).
-- `packages/shared` — cross-app types, the Mongo data layer, and money helpers (see Phase 1/2).
+- `apps/chatops` — Telegram bot (`bot.ts` commands, `index.ts` bootstrap/auth-gate; see Phase 5).
+- `packages/shared` — cross-app types, the Mongo data layer, money helpers, `computeStrategyStats`,
+  and `ControlApiClient` (see Phase 1/2/5).
 - `docker-compose.yml` — local Mongo + Redis for dev.
 
 **Module resolution note** (see Phase 4's first bug): every package uses `module: "ESNext"` /
@@ -359,7 +383,7 @@ npm run typecheck --workspace=@trade-bot/engine
 npm run testnet-smoke --workspace=@trade-bot/engine           # needs BINANCE_API_KEY/SECRET (spot testnet)
 npm run futures-testnet-smoke --workspace=@trade-bot/engine   # needs BINANCE_FUTURES_API_KEY/SECRET (futures testnet)
 
-npm run dev --workspace=@trade-bot/chatops      # tsx watch
+npm run dev --workspace=@trade-bot/chatops      # tsx watch — needs TELEGRAM_BOT_TOKEN/ALLOWED_CHAT_IDS
 npm run typecheck --workspace=@trade-bot/chatops
 
 docker compose up -d                            # local Mongo (27017) + Redis (6379)

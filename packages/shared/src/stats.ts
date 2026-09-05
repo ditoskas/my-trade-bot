@@ -1,6 +1,7 @@
 import { Decimal } from "decimal.js";
 import type { Decimal128 } from "mongodb";
-import { toDecimalJs, type Trade } from "@trade-bot/shared";
+import { toDecimalJs } from "./money";
+import type { Trade } from "./models/index";
 
 export interface StrategyStats {
   totalTrades: number;
@@ -22,6 +23,9 @@ const EMPTY_STATS: StrategyStats = {
   totalFeesPaid: "0",
 };
 
+// Shared by apps/ui (dashboard stat cards) and apps/chatops (/report
+// command) — computed once here rather than duplicated per app.
+//
 // sharpeLike is mean(pnlPct) / stdev(pnlPct) across closed trades — useful
 // for comparing strategies against each other, but NOT a proper
 // time-annualized Sharpe ratio (that needs a consistent return-period

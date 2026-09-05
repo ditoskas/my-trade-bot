@@ -1,8 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { strategiesCollection, tradesCollection } from "@trade-bot/shared";
+import { computeStrategyStats, strategiesCollection, tradesCollection } from "@trade-bot/shared";
 import { getMongo } from "@/lib/mongo";
-import { computeStrategyStats } from "@/lib/stats";
 import type { TradeSummary } from "@/lib/types";
 import { StrategyControls } from "./StrategyControls";
 
