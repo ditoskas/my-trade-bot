@@ -1,12 +1,14 @@
 # Short-Term High-Risk
 
-**Status:** draft, iteration 2 — v1 (1.5× ATR trailing stop) has been run on
-TradingView by the user on both PENGUUSDT and BTCUSDT (15m, Jul 1 - Sep 5
-2026); see **Backtest results** below for the real numbers and what they
-showed. This iteration raises the trailing-stop multiplier to 2.0× based on
-that evidence — not yet re-tested. Still not executed by Claude — no
-TradingView environment available here; all results below came from the
-user actually running it.
+**Status:** draft, iteration 3 — v1 (1.5× ATR trailing stop) and v2 (2.0×
+trailing stop) have both been run on TradingView by the user; see **Backtest
+results** below for the real numbers. v2's hypothesis (wider trail improves
+payoff ratio) was **not confirmed** — BTCUSDT came back slightly worse than
+v1. Iteration 3 reverts the trailing multiplier to 1.5× and instead adds a
+0.5× ATR buffer beyond the structural stop-loss level, targeting average-loss
+size directly rather than the payoff ratio — not yet re-tested. Still not
+executed by Claude — no TradingView environment available here; all results
+below came from the user actually running it.
 
 ## Overview
 
@@ -55,12 +57,18 @@ the same volume filter.
 
 ## Stop loss logic
 
-**Structural**, using the same lookback window as the entry trigger: for a
-long, the stop sits at the low of the same 10-bar range whose high triggered
-entry (mirrored above the 10-bar high for shorts) — "if price falls back into
-the range it just broke out of, the setup failed."
+**Structural, with an ATR buffer** (iteration 3 — see Backtest results): for
+a long, the stop sits at the low of the same 10-bar range whose high
+triggered entry, **minus 0.5× ATR(14, 15m)** (mirrored above the 10-bar high
+plus the buffer for shorts). The buffer exists because v1/v2 placed the stop
+*exactly* at the range boundary, which a perfectly normal post-breakout
+retest can tag without the move actually failing — the buffer gives the
+trade room to breathe through a retest before calling it invalidated.
 
-**Safety cap on top of the structural stop** — this is the part that actually
+**Safety cap on top of the buffered stop** — the cap check uses the *actual*
+(buffered, wider) stop distance, not the raw structural level. Using the
+narrower pre-buffer distance here would silently let more risk through than
+the cap is supposed to permit. This is the part that actually
 makes 10-20x leverage survivable: at 20x, liquidation sits roughly 5% away
 from entry; at 10x, roughly 10% away (using the simple `1/leverage`
 approximation — Pine can't query Binance's actual tiered maintenance-margin
@@ -89,10 +97,10 @@ Full target = 100% profit on margin, which requires the price itself to move
    design choice — once a trade is up more than 50%, it can no longer turn
    into a loss.
 2. The remaining 50% of the position exits at either the full 100% target,
-   or a **2.0× ATR(14, 15m) trailing stop** (raised from 1.5× in iteration
-   2 — see Backtest results), whichever is reached first — letting a strong
-   move run past 100% if momentum continues, while locking in gains if it
-   stalls.
+   or a **1.5× ATR(14, 15m) trailing stop** (reverted from 2.0× — iteration
+   2 tested wider and it was slightly worse, not better; see Backtest
+   results), whichever is reached first — letting a strong move run past
+   100% if momentum continues, while locking in gains if it stalls.
 
 ## Exit rules
 
@@ -142,7 +150,8 @@ exit conditions.
 | Volume filter multiplier | 1.5x | vs. 20-bar average volume |
 | Stop-loss safety cap | 50% | fraction of the `1/leverage` liquidation-distance approximation |
 | TP1 (partial exit + breakeven) | 50% of target | closes 50% of position |
-| Trailing stop (post-TP1) | 2.0× ATR(14, 15m) | raised from 1.5x in iteration 2 — see Backtest results |
+| Trailing stop (post-TP1) | 1.5× ATR(14, 15m) | raised to 2.0x in iteration 2, tested worse, reverted — see Backtest results |
+| Stop-loss ATR buffer | 0.5× ATR(14, 15m) | iteration 3 — added beyond the structural level so a normal post-breakout retest doesn't trigger a premature stop-out |
 | Max concurrent positions | 1 | across the whole symbol universe |
 
 ## Pine Script v6
@@ -194,7 +203,8 @@ breakoutLookback = input.int(10, "15m breakout lookback (bars)")
 volMultiplier    = input.float(1.5, "Volume filter multiplier")
 stopCapFraction  = input.float(0.5, "Stop-loss safety cap (fraction of 1/leverage)")
 atrLen           = input.int(14, "ATR length (trailing stop)")
-atrTrailMult     = input.float(2.0, "ATR multiplier (trailing stop)")  // raised from 1.5 in iteration 2 — see Backtest results
+atrTrailMult     = input.float(1.5, "ATR multiplier (trailing stop)")  // reverted from 2.0 — iteration 2 tested worse, see Backtest results
+atrStopBuffer    = input.float(0.5, "ATR buffer on structural stop")   // iteration 3
 
 // ---- Higher-timeframe data ----
 f_ema(len) => ta.ema(close, len)
@@ -226,10 +236,17 @@ shortTrigger = close < donchianLow  and volFilter
 longSetup  = bullRegime and bullConfirm and longTrigger
 shortSetup = bearRegime and bearConfirm and shortTrigger
 
+// ---- Buffered structural stop levels (iteration 3) ----
+// Computed once here and reused both for the safety-cap check below and the
+// entry block's stopPrice assignment, so the cap always sees the actual
+// (wider) stop distance rather than the narrower pre-buffer level.
+longStopLevel  = donchianLow  - atrStopBuffer * atrVal
+shortStopLevel = donchianHigh + atrStopBuffer * atrVal
+
 // ---- Safety cap ----
 maxStopFraction  = stopCapFraction / leverage
-longStopDistPct  = (close - donchianLow) / close
-shortStopDistPct = (donchianHigh - close) / close
+longStopDistPct  = (close - longStopLevel) / close
+shortStopDistPct = (shortStopLevel - close) / close
 longAllowed      = longStopDistPct  <= maxStopFraction
 shortAllowed     = shortStopDistPct <= maxStopFraction
 
@@ -248,14 +265,14 @@ if strategy.position_size == 0
     if longSetup and longAllowed
         strategy.entry("Long", strategy.long, qty = posQty)
         entryPrice := close
-        stopPrice  := donchianLow
+        stopPrice  := longStopLevel
         tp1Price   := close * (1 + 0.5 / leverage)
         tp2Price   := close * (1 + 1.0 / leverage)
         tp1Done    := false
     else if shortSetup and shortAllowed
         strategy.entry("Short", strategy.short, qty = posQty)
         entryPrice := close
-        stopPrice  := donchianHigh
+        stopPrice  := shortStopLevel
         tp1Price   := close * (1 - 0.5 / leverage)
         tp2Price   := close * (1 - 1.0 / leverage)
         tp1Done    := false
@@ -323,11 +340,42 @@ from 1.5x to 2.0x ATR, on the hypothesis that winners are being cut short
 before reaching their real potential. That's the only change in iteration 2
 — everything else is held constant so the comparison stays clean.
 
-**Not yet tested**: iteration 2 (2.0x trailing multiplier) on either symbol;
-whether PENGU's larger average-loss gap is really a liquidity/execution
-effect or something else; more symbols (ETH, SOL) to see if the ~20% win
-rate pattern generalizes; a higher, more realistic commission/slippage
-assumption to pressure-test whether BTC's edge survives real costs.
+**v2 (2.0× ATR trailing stop), BTCUSDT, same date range:**
+
+| Symbol | Total PnL | Max drawdown | Win rate | Profit factor |
+|---|---|---|---|---|
+| BTCUSDT | +12.43 USDT (+1.24%) | 8.95% | 19.57% (9/46) | 1.069 |
+
+**Hypothesis not confirmed.** Trade count and win rate are identical to v1
+(9/46 = 19.57%) — as expected, since the trailing multiplier only affects
+*where* the runner exits, not whether entries/TP1 fire. But PnL and profit
+factor both came back slightly *worse* than v1 (+12.43 vs +15.15 USDT; 1.069
+vs 1.085 PF). Widening the trail gave losing/breakeven-ish runners more room
+to round-trip back down before stopping out, without capturing enough extra
+upside on the winners to compensate. The lever that looked promising in
+theory (let winners run further) didn't pay off in practice — worth stating
+plainly rather than rationalizing a marginal-looking negative result as
+"basically the same."
+
+**Iteration 3 rationale**: since the trailing-stop lever didn't help, go back
+to the other candidate identified in the v1 analysis — average loss size.
+PENGU's avg loss was roughly double BTC's for the same % stop-cap logic, and
+one plausible mechanism is that the stop sits *exactly* on the structural
+level (the Donchian boundary), so an ordinary post-breakout retest can tag it
+and stop the trade out even when the underlying move is still intact. Adding
+a 0.5× ATR buffer beyond that level gives the trade room to survive a normal
+retest, which should show up as fewer stop-outs on trades that would
+otherwise have gone on to hit TP1/target — i.e. a higher win rate and/or
+smaller average loss, not a change to the trailing-stop behavior at all.
+This is a single-variable change from v1 (trailing multiplier is reverted to
+1.5x, holding that constant) so it can be compared cleanly against the v1
+baseline above rather than v2.
+
+**Not yet tested**: iteration 3 (ATR stop buffer) on either symbol; whether
+PENGU's larger average-loss gap is really a liquidity/execution effect or
+something else; more symbols (ETH, SOL) to see if the ~20% win rate pattern
+generalizes; a higher, more realistic commission/slippage assumption to
+pressure-test whether BTC's edge survives real costs.
 
 ## Backtest notes
 
@@ -351,9 +399,10 @@ assumption to pressure-test whether BTC's edge survives real costs.
 
 ## Next steps
 
-1. Re-run iteration 2 (2.0x trailing multiplier) on both PENGUUSDT and
-   BTCUSDT, same date range, and compare directly against the v1 numbers
-   above — does the payoff ratio actually improve, and by how much?
+1. Re-run iteration 3 (0.5x ATR stop buffer, trailing multiplier back to
+   1.5x) on both PENGUUSDT and BTCUSDT, same date range, and compare directly
+   against the v1 numbers above — does average loss size shrink, and does
+   win rate improve, as hypothesized?
 2. If it helps, test one more variable at a time from the list under
    Backtest results (more symbols, a higher commission assumption) rather
    than changing several things at once.
