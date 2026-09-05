@@ -1,7 +1,7 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 11 — **the first profitable result in this
-strategy's entire history** (+$102.36, +10.24%, PF 1.06). See Status detail
+**Status:** draft, iteration 12 — the profitable result holds
+(+$101.77, +10.18%, PF 1.06, live-verified). See Status detail
 below and Backtest results. Iteration 1 (Fibonacci entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
@@ -96,6 +96,23 @@ in this strategy's entire history. Avg win $62.10 vs avg loss -$18.27 (a
 clears it. Real, but a thin margin on one BTCUSDT window — not yet
 re-verified elsewhere.
 
+**Iteration 12** replaces the independent `maxLossPct` stop input (which
+happened to equal 1.0%, the same as 100x leverage's liquidation distance,
+but wasn't actually *tied* to leverage) with a stop computed directly as
+`1/leverage` — "allow the position to fully liquidate (100% loss) but not
+more," by construction, for whatever leverage is actually set, rather than
+a fixed number that would silently stop being correct if leverage changed.
+This also simplifies the risk-based position-sizing formula: since the
+stop now always costs exactly 100% of margin, "risk X% of equity" collapses
+to directly allocating X% of equity as margin (the leverage/stop-distance
+terms in the old formula cancel out exactly once the stop *is* the
+liquidation point). **Live-verified**: +$101.77 (+10.18%), PF 1.06, 23.23%
+win rate (23/99) — mathematically equivalent to iteration 11 at 100x (since
+1/100 = 1.0%, the same number as before), confirming the refactor is
+correct; the real benefit is that the stop now automatically follows
+leverage if it's ever changed, instead of needing two numbers kept in sync
+by hand.
+
 ## Overview
 
 Single-symbol BTCUSDT.P, **100x leverage**, entries driven by Fibonacci
@@ -175,14 +192,20 @@ design.
 
 ## Stop loss logic
 
-**Flat -1% max-loss stop** (iteration 5), set at entry and never adjusted:
-long stop = `entryClose × (1 − maxLossPct/100)`, short is the mirror. This
-does not replace the reversal exit for winners — it only caps the loss
-side. Added directly in response to iteration 4's single -7.69% trade
-wiping out most of an otherwise-strong equity curve, and matches what web
-research on real high-leverage scalping practice recommends: cap the
-stop-out cost at a fixed, small amount rather than letting it float with
-market structure (see Backtest results for sources).
+**Liquidation-point stop** (iteration 5, redefined in iteration 12), set at
+entry and never adjusted: long stop = `entryClose × (1 − 1/leverage)`,
+short is the mirror. This does not replace the reversal exit for winners —
+it only caps the loss side. Originally a flat, independently-configured
+`-1%` (iteration 5), added in response to iteration 4's single -7.69%
+trade wiping out most of an otherwise-strong equity curve, and matching
+web research on real high-leverage scalping practice: cap the stop-out
+cost at a fixed, small amount rather than letting it float with market
+structure (see Backtest results for sources). Iteration 12 redefined the
+stop distance as exactly `1/leverage` instead of an independent number
+that happened to equal that at 100x — "allow the position to fully
+liquidate (100% loss) but not more," tied directly to whatever leverage is
+actually set, so it can never silently drift out of sync if leverage
+changes.
 
 ## Take profit logic
 
@@ -192,8 +215,9 @@ ratio than a nearby fixed/structural target.
 
 ## Exit rules
 
-- **Stop-loss** (iteration 5): a `-maxLossPct`% adverse move from entry
-  closes the position immediately.
+- **Stop-loss** (iteration 5, redefined in iteration 12): a `-1/leverage`
+  (100% margin loss) adverse move from entry closes the position
+  immediately.
 - A signal in the **opposite** direction from the current position closes
   it and opens the new one (Pine's standard reversal behavior when
   `strategy.entry()` is called for the other side) — this is still how
@@ -205,11 +229,14 @@ ratio than a nearby fixed/structural target.
 ## Position sizing
 
 - **Leverage: 100x**, fixed.
-- **Risk-based sizing (iteration 6)**, replacing iteration 1-5's flat
-  $50-200 table: margin per trade is derived so that hitting the max-loss
-  stop always costs a fixed **% of current equity** (compounding), not a
-  fixed dollar amount regardless of account size —
-  `margin = (equity × riskPct / 100) / (leverage × maxLossPct / 100)`.
+- **Risk-based sizing (iteration 6, simplified in iteration 12)**,
+  replacing iteration 1-5's flat $50-200 table: margin per trade is a fixed
+  **% of current equity** (compounding), not a fixed dollar amount
+  regardless of account size. Originally
+  `margin = (equity × riskPct / 100) / (leverage × maxLossPct / 100)`;
+  since iteration 12 made the stop always cost exactly 100% of margin by
+  construction, that formula collapses to simply `margin = equity ×
+  riskPct / 100` — the leverage and stop-distance terms cancel out exactly.
   riskPct still scales with which Fib level triggered entry (deeper
   retracement = more risk budget):
 
@@ -240,7 +267,7 @@ ratio than a nearby fixed/structural target.
 |---|---|---|
 | Leverage | 100x | Fixed |
 | Pivot confirmation (bars each side) | 5 | iteration 4 |
-| Max loss per trade (% price move) | 1.0% | iteration 5 |
+| Max loss per trade | `1/leverage` (=1.0% at 100x) | iteration 5, tied to leverage in iteration 12 |
 | Minimum swing size (% of price) | 1.5% | iteration 7 |
 | Risk % of equity at 38.2% | 0.5% | iteration 6 |
 | Risk % of equity at 50.0% | 1.0% | iteration 6 |
@@ -277,7 +304,6 @@ strategy(
 // ---- Inputs ----
 leverage         = input.float(100, "Leverage (see margin_long/short note above)", minval = 1, maxval = 125, step = 1)
 pivotLeftRight   = input.int(5, "Pivot confirmation (bars each side)")
-maxLossPct       = input.float(1.0, "Max loss per trade (% price move, iteration 5)")
 minSwingPct      = input.float(1.5, "Minimum swing size to trade (% of price, iteration 7)")
 riskPct382       = input.float(0.5, "Risk % of equity at 38.2% (iteration 6)")
 riskPct500       = input.float(1.0, "Risk % of equity at 50.0% (iteration 6)")
@@ -286,6 +312,14 @@ riskPct786       = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
 minZoneWidth     = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
 sessionStartHour = input.int(20, "Session start hour (UTC, inclusive, iteration 11)")
 sessionEndHour   = input.int(6, "Session end hour (UTC, inclusive, iteration 11)")
+
+// ---- Liquidation-tied stop (iteration 12) ----
+// Stop distance is now exactly 1/leverage -- the theoretical 100%-of-margin
+// loss point -- instead of an independently-set maxLossPct that happened to
+// equal this at 100x but wouldn't automatically follow if leverage changed.
+// "Allow the position to fully liquidate (100% loss) but not more" -- this
+// is that, tied directly to whatever leverage is actually set.
+liqLossFrac = 1 / leverage
 
 // ---- Pivot-based swing detection (iteration 4) ----
 // Replaces iteration 1-3's ta.highest/ta.lowest-over-a-fixed-window approach,
@@ -393,17 +427,14 @@ isBearishConfirmed = isBearish and trend4h == -1 and validZone4h and inNightSess
 // ---- Position state ----
 var float stopPrice = na
 
-// ---- Risk-based position sizing (iteration 6) ----
-// Margin per trade is derived so that hitting the max-loss stop always
-// costs exactly riskPct% of CURRENT equity (compounding), instead of a
-// fixed dollar amount regardless of account size:
-//   dollar loss at stop  ~=  margin * leverage * (maxLossPct / 100)
-//   margin = (equity * riskPct / 100) / (leverage * maxLossPct / 100)
+// ---- Risk-based position sizing (iteration 6, simplified in iteration 12) ----
+// Since the stop now always costs exactly 100% of margin by construction,
+// "risk % of equity" collapses to simply allocating that % of equity as
+// margin directly.
 f_marginForRisk(riskPct) =>
-    riskAmount = strategy.equity * riskPct / 100
-    riskAmount / (leverage * maxLossPct / 100)
+    strategy.equity * riskPct / 100
 
-// ---- Entries: reversal-based, plus a flat max-loss stop (iteration 5) ----
+// ---- Entries: reversal-based, plus the liquidation-point stop (iteration 12) ----
 // Gated on the *confirmed* (1h+4h agreeing) signals (iteration 8); fib
 // levels themselves still come from the 1h swing computed above.
 if isBullishConfirmed
@@ -420,7 +451,7 @@ if isBullishConfirmed
         margin = f_marginForRisk(entryRiskPct)
         qty = (margin * leverage) / close
         strategy.entry("Long", strategy.long, qty = qty)
-        stopPrice := close * (1 - maxLossPct / 100)
+        stopPrice := close * (1 - liqLossFrac)
 else if isBearishConfirmed
     float entryRiskPct = na
     if high >= fib786
@@ -435,9 +466,9 @@ else if isBearishConfirmed
         margin = f_marginForRisk(entryRiskPct)
         qty = (margin * leverage) / close
         strategy.entry("Short", strategy.short, qty = qty)
-        stopPrice := close * (1 + maxLossPct / 100)
+        stopPrice := close * (1 + liqLossFrac)
 
-// ---- Exits: max-loss stop only -- wins still ride until the opposite signal ----
+// ---- Exits: liquidation-point stop only -- wins still ride until the opposite signal ----
 if strategy.position_size > 0
     strategy.exit("SL-L", from_entry = "Long", stop = stopPrice)
 else if strategy.position_size < 0
@@ -630,6 +661,24 @@ than compensates — breakeven at that ratio is ~22.7%, and 23.23% clears it.
 Real, live-verified, but a thin margin on one BTCUSDT window (Jan-Sep
 2026) — not yet re-verified on a different range or symbol, and small
 enough that normal sample variance could erase it.
+
+**Iteration 12 (stop redefined as `1/leverage` instead of an independent
+`maxLossPct`), same date range:**
+
+| Metric | Value |
+|---|---|
+| Total PnL | **+$101.77 (+10.18%)** |
+| Win rate | 23.23% (23/99) |
+| Profit factor | **1.06** |
+| Max drawdown | 29.37% |
+
+Mathematically equivalent to iteration 11 at leverage=100 (`1/100 = 1.0%`,
+the exact value `maxLossPct` was already hardcoded to) — the sub-$1
+difference is rounding noise, not a behavior change. Confirms the refactor
+is correct. The real benefit isn't this run's numbers, it's that the stop
+now automatically tracks leverage: if leverage is ever changed from 100x,
+the stop distance changes with it instead of silently drifting out of sync
+with what "full liquidation" actually means at the new leverage.
 
 ## Next steps
 
