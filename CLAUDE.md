@@ -136,8 +136,7 @@ without modification.
   position was still open), and 39 audit-log entries (`DECISION`/`ORDER_INTENT`/`ORDER_FILLED` ×
   13). `npm run build --workspace=@trade-bot/engine` (real `tsc` compile, not just `--noEmit`)
   also passes.
-- [~] **Phase 3 — Real exchange integration.** Code complete 2026-09-05, **live testnet
-  verification still pending** (needs `BINANCE_API_KEY`/`BINANCE_API_SECRET` — see below).
+- [x] **Phase 3 — Real exchange integration (spot).** Done 2026-09-05, verified live.
   - `broker/binanceBroker.ts` — `BinanceBroker` using the official `@binance/spot` connector
     (`github.com/binance/binance-connector-js`, confirmed via its npm `repository` field before
     installing). MARKET orders only, matching what `StrategyRunner` issues; a market order's
@@ -165,8 +164,38 @@ without modification.
   - Typechecks clean (`npm run typecheck --workspace=@trade-bot/engine`), builds clean via real
     `tsc` (not just `--noEmit`), and the Phase 2 paper-trading run was re-verified unaffected
     (identical 6-trade output against the same real BTCUSDT candles).
-  - **Outstanding**: nobody has run `testnet-smoke` against a real Binance testnet account yet —
-    do that (with testnet-only keys, never mainnet) before checking this phase off as fully done.
+  - **Verified live** 2026-09-05: `testnet-smoke` placed a real MARKET BUY (0.001 BTCUSDT) on
+    Binance's spot testnet — filled instantly (order `12473053`, price ~79700 USDT, 0.0000001 BTC
+    commission), and `reconcile()` ran against the real account and found 0 mismatches. Two real
+    debugging notes worth keeping: (1) the dev machine's clock was ~4.8s ahead of Binance's server
+    time, which the connector's hardcoded `Date.now()` timestamp has no override for — fixed via
+    `w32tm /resync` (needs an elevated shell); (2) a real-account API key (even trading-only, no
+    withdrawal) does **not** authenticate against the testnet base URL — testnet requires its own
+    key generated at testnet.binance.vision itself, entirely separate account system.
+  - **Scope note**: this phase was built spot-only, matching the original plan. The user has since
+    said the actual target is **futures**, which changes the broker, schema, and risk model
+    materially — see the new Phase 3b below rather than extending this checklist entry.
+
+- [ ] **Phase 3b — Futures pivot.** Not started. Binance USDT-M perpetual futures, isolated
+  margin per strategy, one-way position mode (account-level setting), per-strategy configurable
+  leverage with a hard system ceiling enforced by the Risk Manager. Uses the official
+  `@binance/futures-connector` (`github.com/binance/binance-futures-connector-node`) — early
+  (v0.1.7) compared to `@binance/spot` (v32), worth treating as less battle-tested. Existing spot
+  code (`BinanceBroker`, spot `reconcile()`) is kept as-is, not deleted — futures is additive:
+  - Schema: `StrategySignal` gains `ENTER_SHORT`/`EXIT_SHORT` (spot couldn't short; futures can).
+    `RiskLimits.maxLeverage` (per-strategy, enforced against a hard ceiling). `Strategy.marginMode`
+    (`"ISOLATED" | "CROSSED"`). `Order` gains optional `reduceOnly`/`positionSide`. `Trade` gains
+    `leverage` and `fundingFeesPaid` (funding-fee computation itself is deferred — a real gap to
+    flag, not solved yet).
+  - Position sizing changes: margin reserved (capital ledger) is the strategy's free capital;
+    notional exposure = margin × leverage. `StrategyRunner`'s entry/exit logic generalizes from
+    long-only to long-or-short.
+  - `BinanceFuturesBroker` needs one-time account setup (position mode, per-symbol margin type and
+    leverage) done at strategy start, not per-order.
+  - Known gap to flag rather than hide: liquidation-price monitoring (auto-flatten before
+    liquidation) is deferred to Phase 6 hardening — the Risk Manager will enforce a leverage
+    ceiling and the kill switch/lifecycle checks, but not track live margin ratio yet. Futures
+    reconciliation (positions/margin balance, not spot balances) also isn't built yet.
 - [ ] **Phase 4 — Live dashboard.** Redis pub/sub → WS/SSE bridge → Next.js pages: strategy
   list/state, per-strategy stats (Sharpe, max drawdown, win rate, profit factor), trade log, kill
   switch.
