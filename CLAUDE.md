@@ -448,6 +448,17 @@ npm workspaces at the repo root:
 - `apps/chatops` — Telegram bot (`bot.ts` commands, `index.ts` bootstrap/auth-gate; see Phase 5).
 - `packages/shared` — cross-app types, the Mongo data layer, money helpers, `computeStrategyStats`,
   and `ControlApiClient` (see Phase 1/2/5).
+- `strategies/` — one markdown file per trading strategy (entry/stop-loss/take-profit/exit/
+  position-sizing/targets analysis + a working TradingView Pine Script v6 backtest), independent
+  of whatever is or isn't implemented in `apps/engine`. See `strategies/README.md` for the format
+  and `strategies/ma-cross-demo.md` for a filled-in example (the actual demo strategy, documented
+  honestly including its real gap — no stop loss or take profit at all). Managed via the
+  `create-strategy`/`update-strategy`/`delete-strategy` skills (`.claude/skills/`) rather than
+  hand-edited, so the format stays consistent — `create-strategy` interviews the user one question
+  at a time and encodes real Pine v6 gotchas (namespaced functions, typed inputs,
+  `margin_long`/`margin_short` defaulting to 100 — no leverage — unless set explicitly,
+  `from_entry` id matching) directly into the skill rather than relying on stale training-data
+  intuition about Pine syntax.
 - `docker-compose.yml` — local Mongo + Redis for dev.
 
 **Module resolution note** (see Phase 4's first bug): every package uses `module: "ESNext"` /
