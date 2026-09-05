@@ -17,11 +17,12 @@ import { RiskManager } from "./risk/riskManager.js";
 import { MovingAverageCrossStrategy } from "./strategy/movingAverageCross.js";
 import { StrategyRunner } from "./strategyRunner.js";
 
-// Phase 2 proof-of-pipeline run: load real (or, if unreachable, synthetic)
-// candles, feed them through one paper strategy, print the resulting
-// trades. Phase 3 replaces the one-shot candle load with a live WebSocket
-// feed and swaps PaperBroker for BinanceBroker; Phase 4/5 add the dashboard
-// and chatops on top. See CLAUDE.md for the full phase plan.
+// Phase 2/3b proof-of-pipeline run: load real (or, if unreachable, synthetic)
+// candles, feed them through one paper strategy (now long/short with
+// leverage, per Phase 3b's futures pivot), print the resulting trades.
+// Phase 3 replaces the one-shot candle load with a live WebSocket feed and
+// swaps PaperBroker for a real broker; Phase 4/5 add the dashboard and
+// chatops on top. See CLAUDE.md for the full phase plan.
 
 const SYMBOL = "BTCUSDT";
 const MONGODB_URI = process.env.MONGODB_URI ?? "mongodb://localhost:27017/trade-bot-dev";
@@ -37,8 +38,9 @@ async function getOrCreateDemoStrategy(db: Db): Promise<Strategy> {
     _id: new ObjectId(),
     slug,
     name: "MA Cross Demo (paper)",
-    description: "Phase 2 proof-of-pipeline strategy — 5/20 period SMA cross on BTCUSDT.",
-    version: 1,
+    description:
+      "Phase 2/3b proof-of-pipeline strategy — 5/20 period SMA cross on BTCUSDT, long or short, 3x leverage.",
+    version: 2,
     lifecycleState: "paper",
     broker: "paper",
     symbols: [SYMBOL],
@@ -48,6 +50,7 @@ async function getOrCreateDemoStrategy(db: Db): Promise<Strategy> {
       maxPositionSize: toDecimal128("1000"),
       maxConcurrentPositions: 1,
       maxDrawdownPct: 20,
+      maxLeverage: 3,
     },
     config: { fastPeriod: 5, slowPeriod: 20 },
     killSwitchEngaged: false,

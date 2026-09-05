@@ -40,6 +40,9 @@ export interface Order {
   executedQuantity: Decimal128;
   cumulativeQuoteQuantity: Decimal128;
   fills: OrderFill[];
+  // Futures-only: ensures a closing order can only reduce/close an existing
+  // position, never open one in the wrong direction. Meaningless for spot.
+  reduceOnly?: boolean;
   errorMessage?: string;
   intentCreatedAt: Date;
   submittedAt?: Date;

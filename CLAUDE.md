@@ -176,26 +176,64 @@ without modification.
     said the actual target is **futures**, which changes the broker, schema, and risk model
     materially — see the new Phase 3b below rather than extending this checklist entry.
 
-- [ ] **Phase 3b — Futures pivot.** Not started. Binance USDT-M perpetual futures, isolated
-  margin per strategy, one-way position mode (account-level setting), per-strategy configurable
-  leverage with a hard system ceiling enforced by the Risk Manager. Uses the official
-  `@binance/futures-connector` (`github.com/binance/binance-futures-connector-node`) — early
-  (v0.1.7) compared to `@binance/spot` (v32), worth treating as less battle-tested. Existing spot
-  code (`BinanceBroker`, spot `reconcile()`) is kept as-is, not deleted — futures is additive:
-  - Schema: `StrategySignal` gains `ENTER_SHORT`/`EXIT_SHORT` (spot couldn't short; futures can).
-    `RiskLimits.maxLeverage` (per-strategy, enforced against a hard ceiling). `Strategy.marginMode`
-    (`"ISOLATED" | "CROSSED"`). `Order` gains optional `reduceOnly`/`positionSide`. `Trade` gains
-    `leverage` and `fundingFeesPaid` (funding-fee computation itself is deferred — a real gap to
-    flag, not solved yet).
-  - Position sizing changes: margin reserved (capital ledger) is the strategy's free capital;
-    notional exposure = margin × leverage. `StrategyRunner`'s entry/exit logic generalizes from
-    long-only to long-or-short.
-  - `BinanceFuturesBroker` needs one-time account setup (position mode, per-symbol margin type and
-    leverage) done at strategy start, not per-order.
-  - Known gap to flag rather than hide: liquidation-price monitoring (auto-flatten before
-    liquidation) is deferred to Phase 6 hardening — the Risk Manager will enforce a leverage
-    ceiling and the kill switch/lifecycle checks, but not track live margin ratio yet. Futures
-    reconciliation (positions/margin balance, not spot balances) also isn't built yet.
+- [~] **Phase 3b — Futures pivot.** Code complete 2026-09-05, **live futures-testnet verification
+  still pending** (needs `BINANCE_FUTURES_API_KEY`/`BINANCE_FUTURES_API_SECRET` from
+  testnet.binancefuture.com — a separate site/account system from the spot testnet, not
+  interchangeable). Binance USDT-M perpetual futures, isolated margin per strategy, one-way
+  position mode (account-level setting), per-strategy configurable leverage with a hard system
+  ceiling enforced by the Risk Manager. Existing spot code (`BinanceBroker`, spot `reconcile()`) is
+  kept as-is, not deleted — futures is additive, not a replacement.
+  - Uses the official `@binance/futures-connector`
+    (`github.com/binance/binance-futures-connector-node`) — confirmed official via npm, but early
+    (v0.1.7 vs `@binance/spot`'s v32) and **ships no TypeScript types at all**. Ambient types for
+    just the methods we use live in `broker/futuresConnectorTypes.d.ts`; every field read off a
+    response in `binanceFuturesBroker.ts` is validated at runtime, not trusted from a vendor
+    contract, because there isn't one.
+  - Schema (`packages/shared`): `StrategySignal` gains `ENTER_SHORT`/`EXIT_SHORT`.
+    `StrategyPositionState` gains `side: "LONG" | "SHORT" | null`. `RiskLimits.maxLeverage`
+    (per-strategy, enforced by `RiskManager` against a hard ceiling — constructor arg, default
+    20x — so a misconfigured strategy can't exceed it regardless of what its own config says).
+    `Strategy.marginMode` (`"ISOLATED" | "CROSSED"`, futures-only). `BrokerKind` gains
+    `"binance-futures"` (`"binance"` kept its original name for the already-verified spot code, not
+    renamed to `"binance-spot"` — nothing branches on the literal string, so no risk either way).
+    `Order` gains optional `reduceOnly`. `Trade` gains `leverage` and `fundingFeesPaid` (funding-fee
+    computation itself is **not implemented** — the field exists so the shape is ready, but reads
+    as 0 always; don't mistake that for "no funding cost," it means "not tracked yet").
+  - `broker/binanceFuturesBroker.ts` — `BinanceFuturesBroker`, same `Broker` interface as
+    `PaperBroker`/`BinanceBroker`. `configureOneWayPositionMode()` (account-wide, call once) and
+    `configureSymbol(symbol, leverage, marginMode)` (per-symbol, call before trading it) — both
+    treat Binance's "already in that mode" error codes (-4059/-4046) as success, safe to call every
+    strategy start. Unlike spot, a futures order's own response has no fill/commission
+    breakdown — `placeOrder` makes one extra signed call (`getAccountTradeList`) to fetch the real
+    fills rather than estimating a fee rate.
+  - `strategy/movingAverageCross.ts` extended to go both directions. **Found and fixed a real logic
+    bug while doing this**: an earlier version returned `EXIT_LONG`/`EXIT_SHORT` on a reversing
+    cross, which made `SHORT` structurally unreachable — exiting a `LONG` only ever happened on a
+    cross-down, and the next cross is always up (they alternate), so the algorithm could never be
+    flat exactly when a cross-down arrived. Fixed by having `ENTER_LONG`/`ENTER_SHORT` mean "be
+    long/short after this" — `StrategyRunner.onCandle` now treats that as a flip (exit then
+    re-enter) when the opposite side is open, not just "open from flat." Verified live via
+    `PaperBroker`: re-ran the demo strategy against the same 200 real BTCUSDT candles and got 6
+    LONG + 6 SHORT trades (previously always 6 LONG, 0 SHORT), capital ledger balance never went
+    negative, sizing scaled correctly with the strategy's 3x configured leverage (~3x the position
+    size of the earlier 1x spot run on the same data).
+  - `strategyRunner.ts` — also fixed a smaller pre-existing gap while unifying the long/spot and
+    short/leveraged math: the entry order's commission was previously computed and stored but never
+    actually subtracted from PnL (only the exit fee was). Now `OpenPosition` tracks `entryFee`, and
+    `pnl = realizedPnl - (entryFee + exitFee)` for both sides. `pnlPct` is now % return on margin
+    reserved, not on notional — with leverage those differ by roughly the leverage multiple, and
+    margin-based ROI is what was actually at risk. Exit price is now the volume-weighted average
+    (`cumulativeQuoteQuantity / executedQuantity`) instead of just the first fill's price. All of
+    this reduces to the exact Phase 2 spot formulas when leverage is 1, so nothing broke there.
+  - `scripts/futuresTestnetSmokeTest.ts` — configures one-way mode + ISOLATED/3x on the test
+    symbol, opens a small MARKET long, then closes it with a `reduceOnly` SELL. Hardcodes
+    `useTestnet: true`. Run via `npm run futures-testnet-smoke --workspace=@trade-bot/engine`.
+  - Known gaps, flagged rather than hidden: liquidation-price/margin-ratio monitoring is deferred
+    to Phase 6 — `RiskManager` enforces the leverage ceiling and kill switch/lifecycle checks, not
+    live margin health. Futures reconciliation (positions/margin balance, not spot balances) isn't
+    built — `reconcile()` still only covers the spot account. Funding fees aren't computed.
+  - Typechecks and builds clean across `packages/shared` and `apps/engine`.
+  - **Outstanding**: nobody has run `futures-testnet-smoke` against a real account yet.
 - [ ] **Phase 4 — Live dashboard.** Redis pub/sub → WS/SSE bridge → Next.js pages: strategy
   list/state, per-strategy stats (Sharpe, max drawdown, win rate, profit factor), trade log, kill
   switch.

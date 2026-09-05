@@ -1,34 +1,13 @@
 import { Spot, SpotRestAPI, SPOT_REST_API_PROD_URL, SPOT_REST_API_TESTNET_URL } from "@binance/spot";
 import { Decimal } from "decimal.js";
-import { toDecimal128, toDecimalJs, type OrderStatus } from "@trade-bot/shared";
+import { toDecimal128, toDecimalJs } from "@trade-bot/shared";
+import { mapOrderStatus } from "./orderStatus.js";
 import type { Broker, OrderResult, PlaceOrderRequest } from "./types.js";
 
 export interface BinanceBrokerOptions {
   apiKey: string;
   apiSecret: string;
   useTestnet?: boolean;
-}
-
-function mapOrderStatus(status: string | undefined): OrderStatus {
-  switch (status) {
-    case "NEW":
-      return "SUBMITTED";
-    case "PARTIALLY_FILLED":
-      return "PARTIALLY_FILLED";
-    case "FILLED":
-      return "FILLED";
-    case "CANCELED":
-    case "PENDING_CANCEL":
-    case "EXPIRED":
-    case "EXPIRED_IN_MATCH":
-      return "CANCELED";
-    case "REJECTED":
-      return "REJECTED";
-    default:
-      // Binance sometimes adds new statuses — fail loud-but-recorded rather
-      // than crash the engine on one we don't recognize yet.
-      return "FAILED";
-  }
 }
 
 // Talks to Binance directly via the official connector — never through MCP

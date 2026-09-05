@@ -19,6 +19,8 @@ export interface PlaceOrderRequest {
   type: OrderType;
   quantity: Decimal128;
   price?: Decimal128;
+  // Futures-only — PaperBroker and BinanceBroker (spot) ignore it.
+  reduceOnly?: boolean;
 }
 
 export interface OrderResult {
