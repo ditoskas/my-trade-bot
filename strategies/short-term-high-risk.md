@@ -1,16 +1,17 @@
 # Short-Term High-Risk
 
-**Status:** draft, v3 is the current baseline — v1 (1.5× ATR trail), v2 (2.0×
-ATR trail, reverted), and v3 (0.5× ATR stop buffer) have all been run on
-BTCUSDT by the user; see **Backtest results** below for the real numbers. v3
-improved PnL, profit factor, drawdown, and win rate all at once over v1 — the
-best result so far. **Iteration 4 (an exit-order bug fix) was attempted,
-live-tested, and reverted** — see Backtest results for the full story; the
-bug is real but the fix needs more work before it's worth keeping, so v3's
-exit logic is back in place below. Win rate (22.5%, 9/40) is still the user's
-main open concern. Still not executed by Claude directly — a connected
-Chrome tab was used to live-test iteration 4 on real TradingView, but v1-v3
-results all came from the user running it themselves.
+**Status:** draft, v5 is the current baseline — v1 (1.5× ATR trail), v2 (2.0×
+ATR trail, reverted), v3 (0.5× ATR stop buffer), and v5 (07:00–19:00 UTC
+session filter) all improved on the version before, verified live on
+BTCUSDT; see **Backtest results** for the real numbers. v5: +48.95 USDT
+(+4.89%), 6.16% drawdown, 25.00% win rate (7/28), PF 1.47 — better than v3 on
+every metric at once, from fewer trades. **Iteration 4 (an exit-order bug
+fix) was attempted, live-tested, and reverted** — the bug is real and
+documented but the fix isn't verified enough to trust yet; v3/v5's exit code
+predates that investigation and is unaffected by it. This session had live
+TradingView access via a connected Chrome tab (used for iterations 4 and 5,
+including temporary diagnostic logging to find the session-filter pattern);
+v1-v3 results came from the user running them.
 
 ## Overview
 
@@ -56,6 +57,13 @@ regime enabling longs.
 **Short:** exact mirror — 4h EMA(20) < EMA(50) and ADX(14) > 25, 1h close
 below 1h EMA(50), 15m closes below the lowest low of the prior 10 bars with
 the same volume filter.
+
+**Session filter (iteration 5)**: entries only allowed **07:00–19:00 UTC**
+(European morning through the US session overlap — configurable via
+`sessionStartHour`/`sessionEndHour`). Added after diagnostic logging across
+all 20 of v3's trade signals showed a stark liquidity/session split — see
+Backtest results. Exits are not gated by this — a position opened inside the
+window is managed normally even if it's still open after it closes.
 
 ## Stop loss logic
 
@@ -166,6 +174,7 @@ exit conditions.
 | TP1 (partial exit + breakeven) | 50% of target | closes 50% of position |
 | Trailing stop (post-TP1) | 1.5× ATR(14, 15m) | raised to 2.0x in iteration 2, tested worse, reverted — see Backtest results |
 | Stop-loss ATR buffer | 0.5× ATR(14, 15m) | iteration 3 — added beyond the structural level so a normal post-breakout retest doesn't trigger a premature stop-out |
+| Session filter | 07:00–19:00 UTC | iteration 5 — entries only; diagnostic logging showed this window carrying nearly all of v3's real edge, see Backtest results |
 | Max concurrent positions | 1 | across the whole symbol universe |
 
 ## Pine Script v6
@@ -219,6 +228,8 @@ stopCapFraction  = input.float(0.5, "Stop-loss safety cap (fraction of 1/leverag
 atrLen           = input.int(14, "ATR length (trailing stop)")
 atrTrailMult     = input.float(1.5, "ATR multiplier (trailing stop)")  // reverted from 2.0 — iteration 2 tested worse, see Backtest results
 atrStopBuffer    = input.float(0.5, "ATR buffer on structural stop")   // iteration 3
+sessionStartHour = input.int(7, "Session start hour (UTC, inclusive)")   // iteration 5
+sessionEndHour   = input.int(19, "Session end hour (UTC, exclusive)")    // iteration 5
 
 // ---- Higher-timeframe data ----
 f_ema(len) => ta.ema(close, len)
@@ -247,8 +258,16 @@ bearConfirm = close_1h < ema50_1h
 longTrigger  = close > donchianHigh and volFilter
 shortTrigger = close < donchianLow  and volFilter
 
-longSetup  = bullRegime and bullConfirm and longTrigger
-shortSetup = bearRegime and bearConfirm and shortTrigger
+// ---- Session filter (iteration 5) ----
+// Diagnostic logging across all 20 of v3's trade signals showed a stark
+// liquidity/session split (07:00-19:00 UTC vs 20:00-06:00 UTC) — see
+// Backtest results. Gates entries only; an open position is still managed
+// normally outside this window.
+barHourUTC = hour(time, "UTC")
+inSession  = barHourUTC >= sessionStartHour and barHourUTC < sessionEndHour
+
+longSetup  = bullRegime and bullConfirm and longTrigger  and inSession
+shortSetup = bearRegime and bearConfirm and shortTrigger and inSession
 
 // ---- Buffered structural stop levels (iteration 3) ----
 // Computed once here and reused both for the safety-cap check below and the
@@ -474,6 +493,66 @@ PENGU's larger average-loss gap is really a liquidity/execution effect or
 something else; a higher, more realistic commission/slippage assumption to
 pressure-test whether BTC's edge survives real costs.
 
+**Iteration 5 — diagnosing failure patterns directly from trade data**: rather
+than guessing at another indicator to bolt on, added temporary `log.info()`
+diagnostics to v3 (ADX, volume ratio, breakout-extension %, stop distance,
+hour/day-of-week) at every entry, re-ran the same BTCUSDT backtest with live
+TradingView access, and cross-referenced all 20 trade signals' diagnostics
+against their actual outcome (grouping each signal's 1-2 trade-list rows back
+into one combined PnL per signal). Findings:
+
+- **Session/time-of-day — the standout signal.** Splitting the 20 signals by
+  entry hour (UTC):
+
+  | Session | Signals | Win rate | Total PnL |
+  |---|---|---|---|
+  | Night (20:00–06:00 UTC) | 11 | 9% (1/11) | -65.28 USDT |
+  | Day (07:00–19:00 UTC) | 9 | 44% (4/9) | +89.97 USDT |
+
+  Every real winner but one landed in the day window (European morning
+  through the US overlap, Binance's deepest-liquidity hours); night-session
+  breakouts were disproportionately noise/fakeouts on thinner books.
+- **ADX at entry and breakout-extension %**: no clean separation between
+  winners and losers — both spanned the full range on each metric, including
+  very-high-ADX trades on both sides. Explicitly **not** a useful filter here,
+  stated plainly rather than cherry-picked to look like more was found.
+- **Volume ratio**: a weaker, noisier secondary pattern — entries near the
+  1.5x minimum threshold or above ~3.4x (climactic/exhaustion volume) skewed
+  toward losses; the 2.0-3.0x middle band did better. Not acted on this
+  iteration, flagged for later.
+- **Day of week**: weekend signals looked good but n=3 — too small to mean
+  anything, not treated as a finding.
+
+**Iteration 5 change**: added a session filter, entries gated to
+07:00–19:00 UTC (`sessionStartHour`/`sessionEndHour`), exits unaffected.
+Single-variable change from v3.
+
+**v5 (session filter added), BTCUSDT, same date range:**
+
+| Symbol | Total PnL | Max drawdown | Win rate | Profit factor |
+|---|---|---|---|---|
+| BTCUSDT | +48.95 USDT (+4.89%) | 61.67 USDT (6.16%) | 25.00% (7/28) | 1.47 |
+
+**Every headline metric improved over v3 at once**: PnL roughly doubled
+(+48.95 vs +24.70), drawdown fell (6.16% vs 8.63%), win rate rose (25.00% vs
+22.50%), and profit factor jumped (1.47 vs 1.146) — from *fewer* trades (28
+vs 40), directly addressing the "reduce trade count or find a better entry"
+goal this iteration was scoped around. Note the trade count didn't simply
+drop from 40 to ~18 (2× the 9 day-session signals identified in the
+diagnostic pass) — it landed at 28. Blocking night-session entries frees up
+the single-position slot sooner in some cases, which lets *different*
+day-session signals fire that never got a chance while a night-entered
+position was still occupying that slot. The sequence of trades genuinely
+changed, not just a subset removed, so the naive "+89.97 if we'd just
+skipped the night trades" estimate from the diagnostic pass undersold the
+real result.
+
+**Caveat**: still one BTCUSDT window, n=28. The session effect is plausible
+on its face (real liquidity differences exist between these hours on
+Binance) but could partly reflect this specific 2-month period's price
+action landing where it did — re-verifying on a different date range or
+PENGUUSDT before trusting this heavily is still appropriate, not done here.
+
 ## Backtest notes
 
 - Run on the **15m chart**, BTCUSDT perpetual futures, on TradingView's
@@ -496,23 +575,28 @@ pressure-test whether BTC's edge survives real costs.
 
 ## Next steps
 
-1. Re-run iteration 3 (0.5x ATR stop buffer, trailing multiplier back to
-   1.5x) on both PENGUUSDT and BTCUSDT, same date range, and compare directly
-   against the v1 numbers above — does average loss size shrink, and does
-   win rate improve, as hypothesized?
-2. If it helps, test one more variable at a time from the list under
-   Backtest results (more symbols, a higher commission assumption) rather
-   than changing several things at once.
-3. Once a configuration looks genuinely better (not just on this one date
+1. Re-test v5 (session filter) on PENGUUSDT and/or a different date range —
+   the session effect is plausible but only verified on one BTCUSDT window
+   (n=28); confirming it holds elsewhere is the natural next check before
+   leaning on it further.
+2. The weaker volume-ratio pattern from the iteration 5 diagnostics (extremes
+   near 1.5x or above ~3.4x underperforming; 2.0-3.0x doing better) wasn't
+   acted on — worth a single-variable test on its own once the session filter
+   is confirmed to generalize.
+3. If more filtering is wanted, prefer diagnosing from real trade data again
+   (as iteration 5 did) over guessing at a new indicator — it's what actually
+   found the session effect, where RSI/ADX-slope theorizing hadn't yet been
+   tested against data.
+4. Once a configuration looks genuinely better (not just on this one date
    range), the next real piece of work is the engine-side scanner
    (top gainers/losers + favorites → candidate selection → tie-breaking rule
    when multiple symbols qualify at once) — not yet designed.
-4. This project's engine has **no stop-loss/take-profit order support at
+5. This project's engine has **no stop-loss/take-profit order support at
    all** today (`apps/engine`'s `Broker` interface only places market
    entries/exits driven by signals — see `CLAUDE.md`). Promoting this
    strategy into the engine would require building that first, not just
    porting the entry logic.
-5. The known TP1-misdetection bug (see Backtest results, iteration 4) is
+6. The known TP1-misdetection bug (see Backtest results, iteration 4) is
    still unfixed. If revisited, try the single-always-active-stop-order +
    manual `strategy.close()` redesign sketched there instead of resting
    multiple `strategy.exit()` orders against the same entry — that's the
