@@ -1,13 +1,12 @@
 # Short-Term High-Risk
 
-**Status:** draft — written from an interview, not yet run through TradingView's
-Strategy Tester. Also **not yet executed by Claude** — unlike the TypeScript
-engine code elsewhere in this project (compiled and run live throughout),
-there's no TradingView execution environment available here. The multi-stage
-scale-out + trailing-stop logic below is the most complex part of this
-script and the most likely place for a subtle bug — verify it against
-individual trades in the Strategy Tester's trade list, not just the
-aggregate P&L, before trusting it.
+**Status:** draft, iteration 2 — v1 (1.5× ATR trailing stop) has been run on
+TradingView by the user on both PENGUUSDT and BTCUSDT (15m, Jul 1 - Sep 5
+2026); see **Backtest results** below for the real numbers and what they
+showed. This iteration raises the trailing-stop multiplier to 2.0× based on
+that evidence — not yet re-tested. Still not executed by Claude — no
+TradingView environment available here; all results below came from the
+user actually running it.
 
 ## Overview
 
@@ -90,9 +89,10 @@ Full target = 100% profit on margin, which requires the price itself to move
    design choice — once a trade is up more than 50%, it can no longer turn
    into a loss.
 2. The remaining 50% of the position exits at either the full 100% target,
-   or a **1.5× ATR(14, 15m) trailing stop**, whichever is reached first —
-   letting a strong move run past 100% if momentum continues, while locking
-   in gains if it stalls.
+   or a **2.0× ATR(14, 15m) trailing stop** (raised from 1.5× in iteration
+   2 — see Backtest results), whichever is reached first — letting a strong
+   move run past 100% if momentum continues, while locking in gains if it
+   stalls.
 
 ## Exit rules
 
@@ -142,7 +142,7 @@ exit conditions.
 | Volume filter multiplier | 1.5x | vs. 20-bar average volume |
 | Stop-loss safety cap | 50% | fraction of the `1/leverage` liquidation-distance approximation |
 | TP1 (partial exit + breakeven) | 50% of target | closes 50% of position |
-| Trailing stop (post-TP1) | 1.5× ATR(14, 15m) | |
+| Trailing stop (post-TP1) | 2.0× ATR(14, 15m) | raised from 1.5x in iteration 2 — see Backtest results |
 | Max concurrent positions | 1 | across the whole symbol universe |
 
 ## Pine Script v6
@@ -194,7 +194,7 @@ breakoutLookback = input.int(10, "15m breakout lookback (bars)")
 volMultiplier    = input.float(1.5, "Volume filter multiplier")
 stopCapFraction  = input.float(0.5, "Stop-loss safety cap (fraction of 1/leverage)")
 atrLen           = input.int(14, "ATR length (trailing stop)")
-atrTrailMult     = input.float(1.5, "ATR multiplier (trailing stop)")
+atrTrailMult     = input.float(2.0, "ATR multiplier (trailing stop)")  // raised from 1.5 in iteration 2 — see Backtest results
 
 // ---- Higher-timeframe data ----
 f_ema(len) => ta.ema(close, len)
@@ -289,6 +289,46 @@ plot(donchianHigh, "10-bar High", color = color.green)
 plot(donchianLow, "10-bar Low", color = color.red)
 ```
 
+## Backtest results
+
+**v1 (1.5× ATR trailing stop), 15m chart, Jul 1 - Sep 5 2026, $1,000 initial
+capital:**
+
+| Symbol | Total PnL | Max drawdown | Win rate | Profit factor |
+|---|---|---|---|---|
+| PENGUUSDT | -196.26 USDT (-19.63%) | 274.58 USDT (27.46%) | 20.00% (12/60) | 0.562 |
+| BTCUSDT | +15.15 USDT (+1.52%) | 89.07 USDT (8.91%) | 19.57% (9/46) | 1.085 |
+
+Confirmed on-chart: the TP1/breakeven/runner scale-out mechanism does fire
+as two distinct labeled exits ("Bracket-S"/"Runner-S" etc.) — the fill
+detection logic is working, not silently broken.
+
+**What the comparison actually shows**: win rate is nearly identical across
+both symbols (~20%), so win rate was not the differentiator. Decomposing
+profit factor into average win/loss size: PENGU's avg loss (~9.3 USDT) is
+roughly double BTC's (~4.8 USDT) for the same % stop-cap logic, while avg
+win size is similar on both (~21 USDT) — giving BTC a much better payoff
+ratio (~4.5:1 vs PENGU's ~2.25:1). BTC's breakeven win rate at that payoff
+ratio is ~18%, so its actual 19.57% just barely clears it — **+1.52% here is
+not a validated edge, it's barely above breakeven**, and doesn't yet account
+for realistic slippage beyond the flat 0.05% commission modeled.
+
+**Conclusion driving iteration 2**: a ~20% win rate is characteristic of
+this style of strategy (trend-continuation/breakout systems commonly run
+20-40% win rates by design, profiting from a few large winners) — chasing a
+*higher win rate* directly risks cutting into the payoff ratio that's the
+only thing keeping BTC positive at all. The more promising lever is
+extending the payoff ratio further: raising the trailing-stop multiplier
+from 1.5x to 2.0x ATR, on the hypothesis that winners are being cut short
+before reaching their real potential. That's the only change in iteration 2
+— everything else is held constant so the comparison stays clean.
+
+**Not yet tested**: iteration 2 (2.0x trailing multiplier) on either symbol;
+whether PENGU's larger average-loss gap is really a liquidity/execution
+effect or something else; more symbols (ETH, SOL) to see if the ~20% win
+rate pattern generalizes; a higher, more realistic commission/slippage
+assumption to pressure-test whether BTC's edge survives real costs.
+
 ## Backtest notes
 
 - Run on the **15m chart**, BTCUSDT perpetual futures, on TradingView's
@@ -311,9 +351,14 @@ plot(donchianLow, "10-bar Low", color = color.red)
 
 ## Next steps
 
-1. Paste into TradingView, confirm it compiles without errors.
-2. Manually check several individual trades against the logic above.
-3. If it holds up, the next real piece of work is the engine-side scanner
+1. Re-run iteration 2 (2.0x trailing multiplier) on both PENGUUSDT and
+   BTCUSDT, same date range, and compare directly against the v1 numbers
+   above — does the payoff ratio actually improve, and by how much?
+2. If it helps, test one more variable at a time from the list under
+   Backtest results (more symbols, a higher commission assumption) rather
+   than changing several things at once.
+3. Once a configuration looks genuinely better (not just on this one date
+   range), the next real piece of work is the engine-side scanner
    (top gainers/losers + favorites → candidate selection → tie-breaking rule
    when multiple symbols qualify at once) — not yet designed.
 4. This project's engine has **no stop-loss/take-profit order support at
