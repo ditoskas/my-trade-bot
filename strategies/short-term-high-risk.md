@@ -1,14 +1,14 @@
 # Short-Term High-Risk
 
-**Status:** draft, iteration 3 — v1 (1.5× ATR trailing stop) and v2 (2.0×
-trailing stop) have both been run on TradingView by the user; see **Backtest
-results** below for the real numbers. v2's hypothesis (wider trail improves
-payoff ratio) was **not confirmed** — BTCUSDT came back slightly worse than
-v1. Iteration 3 reverts the trailing multiplier to 1.5× and instead adds a
-0.5× ATR buffer beyond the structural stop-loss level, targeting average-loss
-size directly rather than the payoff ratio — not yet re-tested. Still not
-executed by Claude — no TradingView environment available here; all results
-below came from the user actually running it.
+**Status:** draft, iteration 3 result in — v1 (1.5× ATR trail), v2 (2.0× ATR
+trail, reverted — see below), and v3 (0.5× ATR stop buffer) have all been run
+on BTCUSDT by the user; see **Backtest results** below for the real numbers.
+v3 improved PnL, profit factor, drawdown, and win rate all at once over v1 —
+the best result so far, and now the baseline for iteration 4. Win rate
+(22.5%, 9/40) is still the user's main concern; iteration 4 is being scoped
+to address it without undoing v3's other gains. Still not executed by Claude
+— no TradingView environment available here; all results below came from the
+user actually running it.
 
 ## Overview
 
@@ -371,10 +371,36 @@ This is a single-variable change from v1 (trailing multiplier is reverted to
 1.5x, holding that constant) so it can be compared cleanly against the v1
 baseline above rather than v2.
 
-**Not yet tested**: iteration 3 (ATR stop buffer) on either symbol; whether
+**v3 (0.5× ATR stop buffer, trailing multiplier back to 1.5×), BTCUSDT, same
+date range:**
+
+| Symbol | Total PnL | Max drawdown | Win rate | Profit factor |
+|---|---|---|---|---|
+| BTCUSDT | +24.70 USDT (+2.47%) | 86.31 USDT (8.63%) | 22.50% (9/40) | 1.146 |
+
+**Hypothesis confirmed, and by more than expected.** Every headline metric
+improved over v1 at once: PnL nearly doubled (+24.70 vs +15.15 USDT), profit
+factor rose (1.146 vs 1.085), drawdown fell slightly (8.63% vs 8.91%), and
+win rate rose too (22.50% vs 19.57%) — despite the number of winning trades
+staying exactly the same (9). The mechanism: total trade count dropped from
+46 to 40. The buffer widens the *actual* stop distance used in the safety-cap
+check (by design — see Stop loss logic), so some setups whose raw structural
+stop was already close to the cap now get pushed over it by the added buffer
+and are skipped entirely rather than entered. All 6 filtered-out trades were
+apparently losers (win count unchanged, loss count fell by 6) — consistent
+with the theory that tight-structural-stop setups were disproportionately the
+ones getting stopped out on normal noise/retests, not genuine failures.
+
+**Caveat**: n=40 is still a small sample — a handful of trades either way
+would move win rate and PF noticeably. Treat "confirmed" here as "the
+direction and magnitude are what the hypothesis predicted," not as
+statistically airtight. Re-testing on PENGUUSDT and other symbols before
+locking this in is still the right next step, not skipped, just not done in
+this iteration.
+
+**Not yet tested**: iteration 3 on PENGUUSDT or other symbols; whether
 PENGU's larger average-loss gap is really a liquidity/execution effect or
-something else; more symbols (ETH, SOL) to see if the ~20% win rate pattern
-generalizes; a higher, more realistic commission/slippage assumption to
+something else; a higher, more realistic commission/slippage assumption to
 pressure-test whether BTC's edge survives real costs.
 
 ## Backtest notes
