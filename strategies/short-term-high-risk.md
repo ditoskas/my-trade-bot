@@ -1,14 +1,16 @@
 # Short-Term High-Risk
 
-**Status:** draft, iteration 3 result in — v1 (1.5× ATR trail), v2 (2.0× ATR
-trail, reverted — see below), and v3 (0.5× ATR stop buffer) have all been run
-on BTCUSDT by the user; see **Backtest results** below for the real numbers.
-v3 improved PnL, profit factor, drawdown, and win rate all at once over v1 —
-the best result so far, and now the baseline for iteration 4. Win rate
-(22.5%, 9/40) is still the user's main concern; iteration 4 is being scoped
-to address it without undoing v3's other gains. Still not executed by Claude
-— no TradingView environment available here; all results below came from the
-user actually running it.
+**Status:** draft, v3 is the current baseline — v1 (1.5× ATR trail), v2 (2.0×
+ATR trail, reverted), and v3 (0.5× ATR stop buffer) have all been run on
+BTCUSDT by the user; see **Backtest results** below for the real numbers. v3
+improved PnL, profit factor, drawdown, and win rate all at once over v1 — the
+best result so far. **Iteration 4 (an exit-order bug fix) was attempted,
+live-tested, and reverted** — see Backtest results for the full story; the
+bug is real but the fix needs more work before it's worth keeping, so v3's
+exit logic is back in place below. Win rate (22.5%, 9/40) is still the user's
+main open concern. Still not executed by Claude directly — a connected
+Chrome tab was used to live-test iteration 4 on real TradingView, but v1-v3
+results all came from the user running it themselves.
 
 ## Overview
 
@@ -101,6 +103,18 @@ Full target = 100% profit on margin, which requires the price itself to move
    2 tested wider and it was slightly worse, not better; see Backtest
    results), whichever is reached first — letting a strong move run past
    100% if momentum continues, while locking in gains if it stalls.
+
+**Known bug, not yet fixed** (iteration 4 investigation — see Backtest
+results): the structural stop and the TP1 target are combined into one order
+covering only 50% of the position, pre-TP1. If price hits the *stop* side of
+that order instead of the TP1 side, the code can't tell the difference from
+a same-size position shrink — it treats the stop-loss as if TP1 had been
+reached, moves the remaining 50%'s stop to breakeven, and can leave it stuck
+on the wrong side of an already-losing trade. Confirmed real via live
+TradingView testing; three fix attempts were tried and reverted (each
+introduced a worse problem or an unexplained edge case) — see Backtest
+results for the full account. Living with this for now rather than shipping
+an unverified fix.
 
 ## Exit rules
 
@@ -281,7 +295,12 @@ if strategy.position_size == 0
 if strategy.position_size != 0 and not tp1Done
     // strategy.exit's own qty_percent fill is what actually reduces size;
     // this flag just tracks that it happened so the second exit call below
-    // switches from "structural stop" to "breakeven + trailing".
+    // switches from "structural stop" to "breakeven + trailing". Known gap
+    // (iteration 4 investigation, reverted — see Backtest results): this
+    // can't distinguish a real TP1 fill from the bracket order's OWN stop
+    // leg firing on just this 50%, which can misfire the breakeven move.
+    // Confirmed real via live testing; not yet fixed in a way that's
+    // actually verified to be better than living with it.
     if math.abs(strategy.position_size) < math.abs(posQty) * 0.99
         stopPrice := entryPrice
         tp1Done   := true
@@ -398,6 +417,58 @@ statistically airtight. Re-testing on PENGUUSDT and other symbols before
 locking this in is still the right next step, not skipped, just not done in
 this iteration.
 
+**Iteration 4 investigation (attempted, reverted) — the TP1-misdetection bug**:
+diagnosed a real bug directly from v3's List of Trades data (not guessed):
+the pre-TP1 exit order combines the TP1 limit and structural stop into ONE
+order covering only 50% of the position. If the *stop* side fires instead of
+TP1, the code can't tell the difference from a same-size shrink — it treats
+the stop-loss as if TP1 had been reached, moves the remaining 50%'s stop to
+breakeven, and leaves it on the wrong side of an already-losing trade.
+Confirmed against real trade pairs: 1/2 and 3/4 (Jul 1, Jul 3) both show two
+losses 15 minutes to a few hours apart from one signal — the classic
+signature. This session had **live TradingView access** (a connected Chrome
+tab, not just user-reported screenshots) and used it to test three fix
+attempts in place, each surfacing a new Pine order-management subtlety:
+
+1. Split into two orders (TP1 `qty_percent=50`, stop with no qty specified,
+   assuming unspecified meant "100% of whatever remains"). **Wrong** — Pine
+   allocates an unspecified qty as the *complement* of sibling orders'
+   explicit percentages, so the "stop" order only covered the other 50%.
+   Live result: a position sat open and unprotected for two months with a
+   -18.86%-of-equity floating loss — worse than the original bug.
+2. Made both halves explicit `qty_percent=50` (fixing the allocation), but
+   stopped resubmitting the stop-only order once `tp1Done` flipped, switching
+   to a differently-named runner order instead. **Wrong** — a Pine exit order
+   that stops being resubmitted doesn't cancel, it stays resting at its last
+   parameters, so the abandoned order kept "owning" its 50% share forever.
+   Live result: a winning runner never trailed and sat open through a
+   2-month rally instead of taking profit or trailing out.
+3. One persistent stop-side order, called every bar for the trade's whole
+   life with an explicit `qty_percent=50` in both phases. This fixed both
+   prior failures for the common case — three of four re-tested signal pairs
+   (Jul 1, Jul 3, Jul 21) now closed as clean simultaneous 100% stop-outs,
+   exactly as intended. But one pair (Jul 6 entry) still split asymmetrically
+   — one leg stopped at a loss on Jul 7 while the other rode a real TP1 win to
+   Jul 21 — with no confirmed explanation for why two orders nominally
+   sharing the same stop level didn't fire together that time. A cosmetic
+   rounding artifact also showed up (a 0.000001 BTC "dust" position left
+   permanently open, ~$0.07, economically negligible).
+
+**Result with attempt 3 in place**: -14.98 USDT (-1.50%), 4.43% drawdown,
+12.5% win rate (1/8), PF 0.62 — worse than v3's baseline. Part of that is a
+real, non-bug side effect of fixing the bug correctly: letting winners run
+(as the strategy's own rules intend) ties up the single open-position slot
+for weeks at a time, blocking every other signal in that window — a real
+behavior change, not obviously comparable to v3 on this small a sample. But
+with one unexplained asymmetric case still present, the fix isn't verified
+enough to trust yet. **Decision: reverted to v3's exit code** (the version
+above, restored) rather than ship an uncertain fix with worse measured
+results and one open discrepancy. The bug is real and documented in the
+Pine script's comments; a cleaner redesign (a single always-active stop order
+with `strategy.close()` handling TP1 explicitly, avoiding Pine's multi-order
+qty-allocation ambiguity entirely) is the leading candidate for a future
+attempt, not started here.
+
 **Not yet tested**: iteration 3 on PENGUUSDT or other symbols; whether
 PENGU's larger average-loss gap is really a liquidity/execution effect or
 something else; a higher, more realistic commission/slippage assumption to
@@ -441,3 +512,8 @@ pressure-test whether BTC's edge survives real costs.
    entries/exits driven by signals — see `CLAUDE.md`). Promoting this
    strategy into the engine would require building that first, not just
    porting the entry logic.
+5. The known TP1-misdetection bug (see Backtest results, iteration 4) is
+   still unfixed. If revisited, try the single-always-active-stop-order +
+   manual `strategy.close()` redesign sketched there instead of resting
+   multiple `strategy.exit()` orders against the same entry — that's the
+   root cause of all three failed attempts this round.
