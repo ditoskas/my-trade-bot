@@ -99,9 +99,43 @@ without modification.
   Verified live: `docker compose up -d`, then `npm run verify --workspace=@trade-bot/shared`
   connected to the dev Mongo, created all indexes, and confirmed all 7 collections exist.
   Root `.env.example` added (`MONGODB_URI`, `REDIS_URL` for Phase 4).
-- [ ] **Phase 2 — Engine core, paper trading only.** `Strategy` + `Broker` interfaces,
-  `PaperBroker`, Capital Ledger, Risk Manager, one trivial strategy (MA cross) proving the full
-  pipeline with zero exchange risk.
+- [x] **Phase 2 — Engine core, paper trading only.** Done 2026-09-05. All in `apps/engine/src/`:
+  - `broker/types.ts` — the `Broker` interface (`placeOrder`) that `PaperBroker` and Phase 3's
+    `BinanceBroker` both implement; strategy/runner code never knows which one it's talking to.
+  - `broker/paperBroker.ts` — fills instantly and completely at the last price fed via
+    `setPrice()`, with a simulated 0.1% fee. No partial fills/slippage/latency modeling — a known
+    simplification, flagged in its own comment (paper results will look better than live).
+  - `risk/riskManager.ts` — `RiskManager.checkCanEnter` blocks on kill switch or a
+    paused/retired lifecycle state. `maxConcurrentPositions`/`maxDrawdownPct` enforcement is
+    deferred to Phase 6.
+  - `risk/capitalLedger.ts` — `CapitalLedger` (reserve/release against an append-only ledger in
+    `capital_allocations`). Documented known limitation: read-last-entry-then-insert is a
+    check-then-act race across *concurrent* reservations for the same strategy — fine for one
+    strategy at a time, needs an atomic update or Mongo transaction before running several
+    concurrently.
+  - `strategy/types.ts` + `strategy/movingAverageCross.ts` — the `StrategyAlgorithm` interface
+    (named that, not `Strategy`, to stay distinct from `@trade-bot/shared`'s `Strategy` document)
+    and a trivial 5/20-period SMA-cross implementation. Spot-only: no SHORT signal.
+  - `marketData/binancePublic.ts` — fetches real historical candles from Binance's public,
+    unauthenticated klines endpoint (read-only market data, no API key, no trading capability —
+    distinct from the Phase 3 `BinanceBroker` concern). `marketData/syntheticCandles.ts` is the
+    fallback used only if that request fails, so the pipeline still runs without network access.
+  - `strategyRunner.ts` — `StrategyRunner.onCandle()` wires it all together: decide → risk check →
+    capital reserve → broker order → `orders`/`trades`/`audit_log` writes. Known limitation:
+    position state is in-memory only, lost on restart — rebuilding it from Mongo/exchange state on
+    startup is a Phase 3 reconciliation concern.
+  - `index.ts` — the Phase 2 entrypoint: loads 200 real 1h BTCUSDT candles, runs them through one
+    `MovingAverageCrossStrategy` on `PaperBroker`, prints the closed trades.
+  - `packages/shared/src/money.ts` gained `toDecimalJs`/`fromDecimalJs` (decimal.js round-trip) —
+    `Decimal128` has no arithmetic methods, so any money/quantity math goes through decimal.js,
+    never plain JS numbers.
+  **Verified live** (not just typechecked): `npx tsx src/index.ts` against the real Docker Mongo
+  pulled 200 real BTCUSDT hourly candles from Binance's public API and produced 6 closed trades
+  with compounding position sizing. Confirmed in Mongo: 13 orders all `FILLED`, 13 capital-ledger
+  entries (reserve on entry / release on exit, correctly netting to 0 free capital while the last
+  position was still open), and 39 audit-log entries (`DECISION`/`ORDER_INTENT`/`ORDER_FILLED` ×
+  13). `npm run build --workspace=@trade-bot/engine` (real `tsc` compile, not just `--noEmit`)
+  also passes.
 - [ ] **Phase 3 — Real exchange integration.** `BinanceBroker` (official connector, REST + user
   data WebSocket), order-intent outbox, idempotent client order IDs, reconciliation job. Tested
   against Binance testnet before mainnet.

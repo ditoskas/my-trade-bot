@@ -10,6 +10,7 @@
     "verify": "tsx src/scripts/verify-connection.ts"
   },
   "dependencies": {
+    "decimal.js": "^10",
     "mongodb": "^6"
   },
   "devDependencies": {

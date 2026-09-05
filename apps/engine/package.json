@@ -10,7 +10,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@trade-bot/shared": "*"
+    "@trade-bot/shared": "*",
+    "decimal.js": "^10",
+    "mongodb": "^6"
   },
   "devDependencies": {
     "@types/node": "^20",
