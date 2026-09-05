@@ -73,7 +73,7 @@ export class StrategyRunner {
       quantity: fromDecimalJs(this.openPosition?.quantity ?? new Decimal(0)),
     };
 
-    const signal = this.algorithm.decide(candle, positionState);
+    const { signal, riskFraction } = this.algorithm.decide(candle, positionState);
     if (signal === "HOLD") {
       return;
     }
@@ -99,14 +99,14 @@ export class StrategyRunner {
           await this.exitPosition(candle);
         }
         if (!this.openPosition) {
-          await this.enterPosition("LONG", candle);
+          await this.enterPosition("LONG", candle, riskFraction);
         }
       } else if (signal === "ENTER_SHORT") {
         if (positionState.isOpen && positionState.side === "LONG") {
           await this.exitPosition(candle);
         }
         if (!this.openPosition) {
-          await this.enterPosition("SHORT", candle);
+          await this.enterPosition("SHORT", candle, riskFraction);
         }
       } else if (signal === "EXIT_LONG" && positionState.isOpen && positionState.side === "LONG") {
         await this.exitPosition(candle);
@@ -118,7 +118,7 @@ export class StrategyRunner {
     }
   }
 
-  private async enterPosition(side: PositionSide, candle: Candle): Promise<void> {
+  private async enterPosition(side: PositionSide, candle: Candle, riskFraction?: number): Promise<void> {
     this.riskManager.checkCanEnter(this.strategyDoc);
 
     const freeCapital = await this.capitalLedger.getFreeCapital(this.strategyDoc);
@@ -127,11 +127,17 @@ export class StrategyRunner {
       return;
     }
 
+    // riskFraction lets an algorithm reserve only part of free capital as
+    // margin (e.g. btc-high-risk sizes 0.5%-2% of equity per Fib level)
+    // instead of always spending everything available on one trade —
+    // undefined preserves the original "use it all" behavior.
+    const marginToUse = riskFraction === undefined ? freeCapital : freeCapital.mul(riskFraction);
+
     const price = toDecimalJs(candle.close);
-    // Leverage turns margin (freeCapital) into notional exposure. 1 for
-    // spot strategies, so this reduces to the old margin-free formula.
+    // Leverage turns margin into notional exposure. 1 for spot strategies,
+    // so this reduces to the old margin-free formula.
     const leverage = this.strategyDoc.riskLimits.maxLeverage;
-    const notional = freeCapital.mul(leverage);
+    const notional = marginToUse.mul(leverage);
     const quantity = notional.div(price);
 
     const orderId = new ObjectId();
@@ -161,7 +167,7 @@ export class StrategyRunner {
 
     // Reserved *after* the intent is written but *before* the broker call —
     // the outbox record exists either way if this crashes mid-call.
-    await this.capitalLedger.reserve(this.strategyDoc, freeCapital, `enter_${side.toLowerCase()}`, orderId);
+    await this.capitalLedger.reserve(this.strategyDoc, marginToUse, `enter_${side.toLowerCase()}`, orderId);
 
     const result = await this.broker.placeOrder({
       clientOrderId,
@@ -192,7 +198,7 @@ export class StrategyRunner {
       side,
       quantity: toDecimalJs(result.executedQuantity),
       entryPrice: price,
-      marginReserved: freeCapital,
+      marginReserved: marginToUse,
       entryFee,
       entryOrderId: orderId,
       entryTime: candle.closeTime,

@@ -11,6 +11,18 @@ export interface StrategyPositionState {
   quantity: Decimal128;
 }
 
+// riskFraction is only meaningful alongside ENTER_LONG/ENTER_SHORT — the
+// fraction (0-1] of the strategy's free capital to reserve as margin for
+// this entry. Added porting btc-high-risk (see strategy/btcHighRisk.ts),
+// whose position sizing varies per Fib level (0.5%-2% of equity) rather
+// than "use everything," which is all StrategyRunner supported before.
+// Undefined means "use all free capital," preserving MovingAverageCrossStrategy's
+// original behavior unchanged.
+export interface StrategyDecision {
+  signal: StrategySignal;
+  riskFraction?: number;
+}
+
 // Deliberately named StrategyAlgorithm, not Strategy — @trade-bot/shared's
 // Strategy type is the Mongo document (config/lifecycle/capital); this is
 // the pluggable decision logic a strategy document points at. One position
@@ -19,5 +31,13 @@ export interface StrategyPositionState {
 export interface StrategyAlgorithm {
   readonly slug: string;
   readonly symbol: string;
-  decide(candle: Candle, position: StrategyPositionState): StrategySignal;
+  decide(candle: Candle, position: StrategyPositionState): StrategyDecision;
+  // Optional hook for a secondary timeframe's closed candles (e.g.
+  // btc-high-risk's 4h trend/zone confirmation via request.security in the
+  // original Pine script). `tag` identifies which auxiliary feed this is
+  // when a strategy subscribes to more than one — the interval string
+  // (e.g. "240") is a reasonable default. Most strategies (e.g. the MA
+  // cross demo) only ever look at their primary candle stream and can
+  // leave this unimplemented.
+  onAuxCandle?(tag: string, candle: Candle): void;
 }

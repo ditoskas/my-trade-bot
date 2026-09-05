@@ -1,9 +1,14 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 14 — also dropped the 38.2% level (same
-treatment as 61.8%, same diagnostic method), now +$232.02 (+23.20%), PF
-1.18, live-verified. Only the 50.0% and 78.6% Fib levels remain tradeable.
-See Status detail below and Backtest results. Iteration 1 (Fibonacci entries + structural/
+**Status:** draft, iteration 14 for the Pine script — also dropped the
+38.2% level (same treatment as 61.8%, same diagnostic method), now
++$232.02 (+23.20%), PF 1.18, live-verified. Only the 50.0% and 78.6% Fib
+levels remain tradeable. Ported to `apps/engine` as `BtcHighRiskStrategy`
+and running on Binance futures **testnet** (real exchange calls, fake
+funds) — see "Engine port" below for what that port found, including an
+**unresolved signal-parity gap** against this Pine backtest that means the
+port is not yet trusted for real capital. See Status detail below and
+Backtest results. Iteration 1 (Fibonacci entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
 range. Iteration 2 stripped the strategy to entries-only, holding until the
@@ -798,8 +803,134 @@ drop concentrates risk into fewer, larger trades. Only 50.0% and 78.6%
 remain tradeable. 95/95 diagnostic log entries matched to trades with zero
 discrepancies.
 
+## Engine port
+
+This strategy's Pine script (iteration 14) was ported to a real TypeScript
+`StrategyAlgorithm` in `apps/engine/src/strategy/btcHighRisk.ts`, so it can
+actually run in `apps/engine` rather than only backtest on TradingView.
+This is genuinely new capability, not just a doc update, so it's recorded
+here rather than as another Pine iteration.
+
+**Framework changes needed to support it** (this strategy's needs didn't
+fit the engine's existing assumptions, built only for the always-in-100%
+MA-cross demo):
+
+- `StrategyAlgorithm.decide()` now returns `{ signal, riskFraction? }`
+  instead of a bare signal — `riskFraction` lets an algorithm reserve only
+  part of free capital as margin (this strategy sizes 1%/2% of equity per
+  Fib level) instead of always spending everything on one trade.
+  `StrategyRunner.enterPosition` now multiplies free capital by this
+  fraction (defaulting to 1.0, unchanged, when an algorithm doesn't
+  specify one) before reserving/sizing. `MovingAverageCrossStrategy` was
+  updated to the new return shape with no behavior change.
+- `StrategyAlgorithm.onAuxCandle?(tag, candle)` — an optional hook for a
+  secondary timeframe's closed candles, since this strategy needs its own
+  4h trend/zone confirmation (the Pine script's `request.security` call)
+  alongside its primary 1h decisions. `index.ts` opens a second
+  `BinanceFuturesKlineStream` (4h) and feeds it straight to this hook,
+  bypassing `StrategyRunner` entirely since 4h candles never trigger an
+  order on their own. `warmUpAuxCandles()` (new, alongside the existing
+  `warmUpAlgorithm()`) primes it from history the same way.
+- `apps/engine/src/marketData/binanceFuturesPublic.ts` and
+  `binanceFuturesKlineStream.ts` — futures equivalents of the existing
+  spot-only historical-fetch and WebSocket-stream helpers. Added as new
+  files rather than parametrizing the spot ones, matching the
+  additive-not-modifying convention Phase 3b already established for
+  `BinanceFuturesBroker` alongside `BinanceBroker`. This matters here
+  specifically: the existing engine-wide market data path is spot-only,
+  but this strategy was researched and backtested against **BTCUSDT.P
+  perpetual futures** prices — using spot data for a futures-calibrated,
+  exact-price-level strategy would be a real (if usually small)
+  data-source mismatch, not just a style preference.
+- `StrategyRegistry`'s `RegisteredStrategy.stream` is now typed as a small
+  structural `{ stop(): void }` interface instead of the concrete spot
+  `BinanceKlineStream` class, and gained an optional `auxStreams` array —
+  needed once a strategy can hold more than one live connection.
+
+**A real, pre-existing bug found while wiring this up**: `apps/engine`'s
+`npm run dev`/`start` scripts never actually loaded `.env` — no `dotenv`,
+no `--env-file`, nothing. Every earlier phase's "verified live against
+real credentials" claim in this document must have worked via some
+IDE-specific auto-loading (a JetBrains run configuration, most likely),
+not the documented `npm run dev` command itself, which would silently see
+`undefined` for every credential and fall back to paper/no-op behavior
+with no error. Fixed by adding Node's built-in
+`--env-file-if-exists=../../.env` (Node 22, already this project's
+version — `-if-exists` specifically so a fresh clone with no `.env` yet
+doesn't crash on startup) to `dev`/`start`/`testnet-smoke`/
+`futures-testnet-smoke` in both `apps/engine` and `apps/chatops`'s
+`package.json`. Worth knowing if any earlier phase's "live-verified"
+credential-dependent claim ever needs re-checking from a plain shell.
+
+**Verified live** (not just typechecked): with that fix, `npm run dev`
+warmed the algorithm up with 500 real 1h + 200 real 4h BTCUSDT.P futures
+candles, then configured itself against the real Binance **futures
+testnet** account (one-way position mode, ISOLATED margin, 100x) via
+`BinanceFuturesBroker` — real signed API calls, all three succeeded with
+no errors. Currently gated to testnet by two independent switches:
+`BINANCE_FUTURES_USE_TESTNET` (shared convention, defaults true) and a
+**strategy-specific** `BTC_HIGH_RISK_ALLOW_LIVE` (must be `"true"` even if
+the first switch is flipped) — added specifically because of the
+unresolved gap below, on top of (not instead of) the shared convention.
+
+**Unresolved signal-parity gap — do not point this at a real account until
+this is closed.** Cross-checked the ported algorithm's output against this
+strategy's own real iteration-14 trade history (still cached from the
+TradingView session, real trades from the live 20:00-06:00 UTC session
+filter's actual backtest) for the same real calendar window
+(2026-07-27 to 2026-08-31): fed 1000 real 1h + 300 real 4h BTCUSDT.P
+futures candles (fetched fresh via `fetchHistoricalFuturesCandles`)
+through the ported algorithm in strict chronological order (1h and 4h
+candles merged and sorted by timestamp, so it never sees 4h context before
+that candle actually closed) via a new standalone check,
+`apps/engine/src/scripts/btcHighRiskSmokeTest.ts`. Result: of 8 real Pine
+trades in that window, the port reproduced **3 exactly** (same direction,
+same hour — Jul 30 Short, Aug 3 Short, Aug 27 Short), got **1 right on
+direction but an hour off** (Aug 26 Long), and **missed the remaining 4
+entirely**. The 3 exact matches are real evidence the core pivot/Fib/
+session logic is fundamentally sound, not broken outright (the same
+failure shape as the original Pine port's inverted bar-index bug would
+look like zero or near-zero matches, not this) — but this is not
+parity, and shipping a signal generator with a known, unexplained ~50%
+miss rate to real capital would be irresponsible.
+
+Leading hypothesis, not yet confirmed: the smoke test's warm-up window
+(~41-50 days) is far shorter than the Pine backtest's (the full Jan-Sep
+2026 range), so the two could genuinely be anchored to a different
+"current" 1h/4h swing pivot right now — different anchor means different
+Fib levels means different trigger points, without either implementation
+being wrong per se. Re-running the same check with a warm-up matching
+Pine's full history is the concrete next step to confirm or rule this out
+before trusting the port further.
+
+**Other known gaps, flagged in code comments, not hidden**:
+
+- The liquidation-tied stop is checked once per closed 1h candle against
+  that candle's high/low, not continuously in real time — matches what the
+  Pine backtest itself actually verified (same bar-granularity), but a
+  live position sits unprotected between candle closes. A real deployment
+  should place an actual exchange-side `reduceOnly` `STOP_MARKET` order
+  right after entry so the exchange enforces it continuously; that order
+  type doesn't exist in this codebase yet (`OrderType` is
+  `"MARKET" | "LIMIT"` only in `packages/shared`) — a real follow-up, not
+  built here.
+- Position state (including the recorded stop price) is in-memory only,
+  lost on a process restart — same documented limitation `StrategyRunner`
+  itself already carries.
+- The pivot detector (`PivotSwingTracker` in `btcHighRisk.ts`) is a
+  best-effort reimplementation of Pine's `ta.pivothigh`/`ta.pivotlow`, not
+  a verified byte-for-byte match — the signal-parity gap above may turn
+  out to be partly this rather than purely a warm-up-length artifact.
+
 ## Next steps
 
+0. **Close the engine port's signal-parity gap** (see Engine port above)
+   before this touches even futures testnet execution in earnest, let
+   alone a real account: re-run `btcHighRiskSmokeTest.ts` with a warm-up
+   window matching the Pine backtest's full Jan-Sep 2026 history instead
+   of ~41-50 days, and see if that closes the gap (3/8 exact matches, 1
+   off-by-an-hour, 4 missed). If it doesn't, the pivot detector itself
+   needs closer comparison against Pine's `ta.pivothigh`/`ta.pivotlow`.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — a ~$232 edge over 74 trades on one window is real progress, not
    proof. This is the single most important unfinished check, more so now

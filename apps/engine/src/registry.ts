@@ -1,12 +1,24 @@
 import type { Db } from "mongodb";
 import { strategiesCollection, type Strategy } from "@trade-bot/shared";
-import type { BinanceKlineStream } from "./marketData/binanceKlineStream";
 import type { StrategyRunner } from "./strategyRunner";
+
+// Structural, not a concrete class — a strategy's stream(s) may be spot
+// (BinanceKlineStream) or futures (BinanceFuturesKlineStream) kline
+// connections, or any future market-data source, and everything here only
+// ever needs to call stop() on them.
+interface StoppableStream {
+  stop(): void;
+}
 
 export interface RegisteredStrategy {
   doc: Strategy;
   runner: StrategyRunner;
-  stream: BinanceKlineStream;
+  stream: StoppableStream;
+  // Extra market-data connections beyond the primary stream — e.g.
+  // btc-high-risk's independent 4h confirmation feed (see
+  // StrategyAlgorithm.onAuxCandle). Optional since most strategies (the MA
+  // cross demo) only ever need the one.
+  auxStreams?: StoppableStream[];
 }
 
 // Holds every running strategy's live, mutable state. The control API
@@ -63,6 +75,9 @@ export class StrategyRegistry {
   stopAll(): void {
     for (const entry of this.strategies.values()) {
       entry.stream.stop();
+      for (const aux of entry.auxStreams ?? []) {
+        aux.stop();
+      }
     }
   }
 }

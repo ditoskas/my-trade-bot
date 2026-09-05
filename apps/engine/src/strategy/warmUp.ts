@@ -14,3 +14,15 @@ export function warmUpAlgorithm(algorithm: StrategyAlgorithm, historicalCandles:
     algorithm.decide(candle, { isOpen: false, side: null, quantity: fromDecimalJs(new Decimal(0)) });
   }
 }
+
+// Same idea as warmUpAlgorithm, but for a strategy's auxiliary timeframe
+// (see StrategyAlgorithm.onAuxCandle) — e.g. btc-high-risk's 4h trend/zone
+// state needs its own history before the 1h feed can trust it.
+export function warmUpAuxCandles(algorithm: StrategyAlgorithm, tag: string, historicalCandles: Candle[]): void {
+  if (!algorithm.onAuxCandle) {
+    return;
+  }
+  for (const candle of historicalCandles) {
+    algorithm.onAuxCandle(tag, candle);
+  }
+}

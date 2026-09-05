@@ -1,7 +1,7 @@
 import { Decimal } from "decimal.js";
 import { toDecimalJs } from "@trade-bot/shared";
 import type { Candle } from "../broker/types";
-import type { StrategyAlgorithm, StrategyPositionState, StrategySignal } from "./types";
+import type { StrategyAlgorithm, StrategyDecision, StrategyPositionState, StrategySignal } from "./types";
 
 function average(values: Decimal[]): Decimal {
   return values.reduce((sum, value) => sum.plus(value), new Decimal(0)).div(values.length);
@@ -36,13 +36,13 @@ export class MovingAverageCrossStrategy implements StrategyAlgorithm {
     this.slowPeriod = slowPeriod;
   }
 
-  decide(candle: Candle, position: StrategyPositionState): StrategySignal {
+  decide(candle: Candle, position: StrategyPositionState): StrategyDecision {
     this.closes.push(toDecimalJs(candle.close));
     if (this.closes.length > this.slowPeriod) {
       this.closes.shift();
     }
     if (this.closes.length < this.slowPeriod) {
-      return "HOLD";
+      return { signal: "HOLD" };
     }
 
     const fast = average(this.closes.slice(-this.fastPeriod));
@@ -58,6 +58,6 @@ export class MovingAverageCrossStrategy implements StrategyAlgorithm {
       }
     }
     this.wasFastAboveSlow = fastAboveSlow;
-    return signal;
+    return { signal };
   }
 }
