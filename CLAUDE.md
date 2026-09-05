@@ -176,13 +176,11 @@ without modification.
     said the actual target is **futures**, which changes the broker, schema, and risk model
     materially — see the new Phase 3b below rather than extending this checklist entry.
 
-- [~] **Phase 3b — Futures pivot.** Code complete 2026-09-05, **live futures-testnet verification
-  still pending** (needs `BINANCE_FUTURES_API_KEY`/`BINANCE_FUTURES_API_SECRET` from
-  testnet.binancefuture.com — a separate site/account system from the spot testnet, not
-  interchangeable). Binance USDT-M perpetual futures, isolated margin per strategy, one-way
-  position mode (account-level setting), per-strategy configurable leverage with a hard system
-  ceiling enforced by the Risk Manager. Existing spot code (`BinanceBroker`, spot `reconcile()`) is
-  kept as-is, not deleted — futures is additive, not a replacement.
+- [x] **Phase 3b — Futures pivot.** Done 2026-09-05, verified live against Binance's futures
+  testnet. Binance USDT-M perpetual futures, isolated margin per strategy, one-way position mode
+  (account-level setting), per-strategy configurable leverage with a hard system ceiling enforced
+  by the Risk Manager. Existing spot code (`BinanceBroker`, spot `reconcile()`) is kept as-is, not
+  deleted — futures is additive, not a replacement.
   - Uses the official `@binance/futures-connector`
     (`github.com/binance/binance-futures-connector-node`) — confirmed official via npm, but early
     (v0.1.7 vs `@binance/spot`'s v32) and **ships no TypeScript types at all**. Ambient types for
@@ -233,7 +231,18 @@ without modification.
     live margin health. Futures reconciliation (positions/margin balance, not spot balances) isn't
     built — `reconcile()` still only covers the spot account. Funding fees aren't computed.
   - Typechecks and builds clean across `packages/shared` and `apps/engine`.
-  - **Outstanding**: nobody has run `futures-testnet-smoke` against a real account yet.
+  - **Verified live** 2026-09-05: `futures-testnet-smoke` configured one-way mode + ISOLATED/3x on
+    BTCUSDT, opened a real MARKET long (0.002 BTC, order `28572075134`), and closed it with a
+    `reduceOnly` SELL (order `28572075144`) — both filled with real commission data.
+  - **Found and fixed a second real bug during that verification run**: a futures `newOrder`
+    response doesn't reliably reflect the fill synchronously the way spot's does — the first live
+    run returned `status: "SUBMITTED"`, `executedQuantity: "0.0000"` at the top level *while the
+    fills already fetched via `getAccountTradeList` showed it had, in fact, filled* (real price,
+    quantity, commission). `placeOrder` now derives `status`/`executedQuantity`/
+    `cumulativeQuoteQuantity` from the fetched fills whenever any exist, falling back to the raw
+    order response only if fills comes back empty. That fallback path is itself a known remaining
+    race-condition gap (if the trade list hasn't caught up yet when queried) — a retry/poll loop
+    would close it, not built yet, worth doing before this is trusted with real money.
 - [ ] **Phase 4 — Live dashboard.** Redis pub/sub → WS/SSE bridge → Next.js pages: strategy
   list/state, per-strategy stats (Sharpe, max drawdown, win rate, profit factor), trade log, kill
   switch.

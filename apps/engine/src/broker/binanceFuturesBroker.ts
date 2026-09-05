@@ -1,6 +1,6 @@
 import { UMFutures } from "@binance/futures-connector";
 import { Decimal } from "decimal.js";
-import { toDecimal128, toDecimalJs, type MarginMode } from "@trade-bot/shared";
+import { fromDecimalJs, toDecimal128, toDecimalJs, type MarginMode } from "@trade-bot/shared";
 import { mapOrderStatus } from "./orderStatus.js";
 import type { Broker, OrderResult, PlaceOrderRequest } from "./types.js";
 
@@ -108,6 +108,33 @@ export class BinanceFuturesBroker implements Broker {
       typeof orderId === "number" || typeof orderId === "string"
         ? await this.getFillsForOrder(request.symbol, orderId)
         : [];
+
+    // Unlike spot, a futures MARKET order's own newOrder response doesn't
+    // reliably reflect the fill yet — observed live on testnet returning
+    // status "NEW"/executedQty "0" *while the fills we just fetched above
+    // already show it filled*. Derive the authoritative state from those
+    // fills instead of trusting the order response's own snapshot.
+    // Known gap: if getAccountTradeList raced ahead of the fill actually
+    // landing there, fills comes back empty and this falls back to the
+    // (possibly stale) order response — a real edge case, not solved here,
+    // that a retry/poll loop would close before this is trusted with real
+    // money (see CLAUDE.md Phase 3b / Phase 6).
+    if (fills.length > 0) {
+      const executedQuantity = fills.reduce((sum, fill) => sum.plus(toDecimalJs(fill.quantity)), new Decimal(0));
+      const cumulativeQuoteQuantity = fills.reduce(
+        (sum, fill) => sum.plus(toDecimalJs(fill.quantity).mul(toDecimalJs(fill.price))),
+        new Decimal(0),
+      );
+      const isFullyFilled = executedQuantity.greaterThanOrEqualTo(quantity);
+
+      return {
+        exchangeOrderId: orderId !== undefined ? String(orderId) : "",
+        status: isFullyFilled ? "FILLED" : "PARTIALLY_FILLED",
+        executedQuantity: fromDecimalJs(executedQuantity),
+        cumulativeQuoteQuantity: fromDecimalJs(cumulativeQuoteQuantity),
+        fills,
+      };
+    }
 
     return {
       exchangeOrderId: orderId !== undefined ? String(orderId) : "",
