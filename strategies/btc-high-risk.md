@@ -1076,9 +1076,32 @@ strict inequality. Typechecks, builds, and re-ran clean against real data
 via `btcHighRiskSmokeTest.ts` (4 entries over the same ~41-day window,
 non-zero and directionally sane — same shape as before the fix, as
 expected since that quick check never had enough trades to show the
-parity gap clearly in the first place). **Not yet re-verified against a
-fresh 94-trade Pine parity check** — that re-check, not this fix in
-isolation, is what would justify treating the gap as closed.
+parity gap clearly in the first place).
+
+**Re-verified with a full parity re-check — fix confirmed as a real,
+substantial improvement, gap narrowed but not closed.** Re-ran real Pine
+iteration-14 trades against the fixed port (`minWick4hRatio: 0` to
+neutralize iteration 15's filter, isolating the pivot fix cleanly against
+the iteration-14 baseline the original 63.8% number was measured
+against). One methodology deviation, disclosed rather than glossed over:
+the original 94-trade check's warm-up went back to 2025-06-01/2025-01-01,
+but this TradingView account's 1h chart history for this symbol now only
+reaches back to ~Jan 2026 (confirmed live — "Go to date" for both
+2025-06-01 and 2025-11-01 clamps to the same earliest bar) — so this
+re-check used a shorter, but identically-applied, warm-up window from
+2026-01-01 for both Pine and the port. Not a byte-for-byte repeat of the
+exact same run, but a fair test of the same question. Result, over
+Jan 1-Sep 6, 2026: **73 real trades, 74 port entries, 54 exact matches, 10
+off-by-one-hour, 9 missed entirely, 10 extra port-only signals, 0
+direction mismatches — an 87.7% match rate, up from 63.8%.** Extra
+port-only signals collapsed from 88 to 10, direct confirmation the
+tie-breaking bug was generating spurious pivots essentially as
+hypothesized. **Conclusion: the gap is narrowed, not closed.** 87.7% is a
+real, large improvement — not noise — but still short of "genuinely close
+to 100%," with 9 real trades still missed and 10 signals still extra.
+`BTC_HIGH_RISK_ALLOW_LIVE` stays gated; a further diagnostic pass on the
+remaining 9+10 divergent cases specifically (rather than another aggregate
+re-run) is the next concrete step if this is worth continuing to chase.
 
 **Other known gaps, flagged in code comments, not hidden**:
 
@@ -1114,12 +1137,14 @@ isolation, is what would justify treating the gap as closed.
    real bug behind this via an isolated synthetic Pine test (not just the
    trade-outcome comparison) — `PivotSwingTracker`'s tie-breaking didn't
    match Pine's actual (asymmetric) rule, letting the port confirm extra
-   pivots Pine never would. That's a strong candidate for explaining a good
-   chunk of the 88 extra signals in particular. Next concrete step: **re-run
-   the full 94-trade parity check** (same methodology as the 63.8% result —
-   real Pine trade list vs. the fixed port over the same real window) to
-   get an updated match-rate number. Only once that number is genuinely
-   close to 100% should `BTC_HIGH_RISK_ALLOW_LIVE` even be reconsidered.
+   pivots Pine never would. **Re-verified**: 87.7% match rate post-fix (54
+   exact + 10 off-by-1h out of 73 real trades, 10 extra port-only signals,
+   down from 88) — a real, substantial improvement, confirming the
+   hypothesis, but still not "close to 100%." 9 real trades missed and 10
+   extra signals remain. Next concrete step: diagnose those specific
+   remaining divergent cases directly (not another aggregate re-run) —
+   only once that residual gap is closed too should
+   `BTC_HIGH_RISK_ALLOW_LIVE` even be reconsidered.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
