@@ -19,3 +19,10 @@ all:
           ansible_host: "{{ server_host }}"
           ansible_user: "{{ ssh_username }}"
           ansible_port: "{{ ssh_port }}"
+          # Optional — leave become_password unset in all.yml (or delete
+          # the line) to be prompted instead via --ask-become-pass. Safe to
+          # default to an empty string here (unlike the SSH key case
+          # above): an empty become password just fails the same way
+          # leaving this out entirely does, it doesn't produce a bogus
+          # placeholder value.
+          ansible_become_password: "{{ become_password | default('') }}"

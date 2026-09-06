@@ -17,6 +17,12 @@ ssh_port: 22
 # `IdentityFile` entry in `~/.ssh/config` for this host, or pass
 # `--private-key=/path/to/key` on the ansible-playbook command line.
 
+# The whole playbook runs with become: true (sudo). Set this so you're not
+# prompted on every run, or leave it "" / delete the line to be prompted
+# via --ask-become-pass instead. If ssh_username already has passwordless
+# sudo on the server, you don't need this at all.
+become_password: ""
+
 # ---- Domain / nginx ----
 domain_name: "trade.toskas.gr"
 # Requires DNS for domain_name already pointing at server_host, and port 80
