@@ -357,6 +357,18 @@ async function main(): Promise<void> {
   console.log("[engine] running — press Ctrl+C to stop");
 }
 
+// Last-resort safety net, not a substitute for the fixes at each real call
+// site (StrategyRunner.onCandle, the kline stream classes) — Node
+// terminates the whole process on an unhandled rejection by default, which
+// is exactly what took down an entire overnight run (both demo strategies
+// included) over one transient Mongo hiccup during an audit-log write.
+// Every strategy shares this one process, so any rejection that still
+// slips through is logged and the process keeps running rather than
+// silently going down for every strategy at once.
+process.on("unhandledRejection", (reason) => {
+  console.error("[engine] unhandled rejection (continuing):", reason);
+});
+
 main().catch((error: unknown) => {
   console.error("[engine] fatal error:", error);
   process.exitCode = 1;

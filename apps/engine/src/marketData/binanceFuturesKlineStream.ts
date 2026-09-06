@@ -68,7 +68,15 @@ export class BinanceFuturesKlineStream {
           close: toDecimal128(data.k.c),
           volume: toDecimal128(data.k.v),
         };
-        void this.options.onClosedCandle(candle);
+        // .catch(), not just the surrounding try/catch — that only catches
+        // a *synchronous* throw, not a rejection from this async callback,
+        // which would otherwise become an unhandled rejection (and, by
+        // Node's default, crash the whole process — see
+        // StrategyRunner.onCandle's own comment on the live incident this
+        // was found from).
+        void Promise.resolve(this.options.onClosedCandle(candle)).catch((error: unknown) =>
+          this.options.onError?.(error as Error),
+        );
       } catch (error) {
         this.options.onError?.(error as Error);
       }

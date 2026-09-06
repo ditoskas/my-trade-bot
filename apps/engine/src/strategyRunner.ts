@@ -113,6 +113,20 @@ export class StrategyRunner {
       } else if (signal === "EXIT_SHORT" && positionState.isOpen && positionState.side === "SHORT") {
         await this.exitPosition(candle);
       }
+    } catch (error) {
+      // A single candle's processing must never take down the whole
+      // engine process — every other strategy runs in this same process
+      // (see CLAUDE.md's "one supervised worker per strategy... a
+      // crash/error in one restarts that worker, not the others": an
+      // uncaught error here previously violated exactly that guarantee,
+      // since Node terminates the whole process on an unhandled rejection
+      // by default. Found live: a transient Mongo connectivity blip during
+      // an audit-log write crashed the entire engine, both demo strategies
+      // included, during an otherwise-healthy overnight run. Logged and
+      // swallowed here instead — this candle's action is lost, but the
+      // strategy (and every other one sharing this process) keeps running
+      // for the next candle rather than requiring a manual restart.
+      console.error(`[strategy:${this.strategyDoc.slug}] onCandle failed, continuing:`, (error as Error).message);
     } finally {
       this.busy = false;
     }
@@ -335,14 +349,26 @@ export class StrategyRunner {
   }
 
   private async audit(eventType: AuditEventType, payload: Record<string, unknown>): Promise<void> {
-    await auditLogCollection(this.db).insertOne({
-      _id: new ObjectId(),
-      strategyId: this.strategyDoc._id,
-      eventType,
-      source: "engine",
-      payload,
-      timestamp: new Date(),
-    });
+    // Fail-open, matching EventPublisher.publish()'s existing behavior for
+    // the same call site — audit_log is an observability record, not the
+    // outbox itself (orders/trades/capital_ledger writes elsewhere in this
+    // file are the ones that must not silently fail). A transient Mongo
+    // hiccup here should cost an audit entry, not abort whatever order
+    // action this call is bracketing (some audit() calls happen *after* a
+    // real fill, e.g. ORDER_FILLED — losing that log line is fine; losing
+    // track of the fill itself would not be).
+    try {
+      await auditLogCollection(this.db).insertOne({
+        _id: new ObjectId(),
+        strategyId: this.strategyDoc._id,
+        eventType,
+        source: "engine",
+        payload,
+        timestamp: new Date(),
+      });
+    } catch (error) {
+      console.error(`[strategy:${this.strategyDoc.slug}] audit log write failed:`, (error as Error).message);
+    }
     // Same call site as the Mongo write (audit_log is the durable record,
     // this is just the live feed) — every DECISION/ORDER_INTENT/
     // ORDER_FILLED/RISK_BLOCK reaches the dashboard exactly where it
