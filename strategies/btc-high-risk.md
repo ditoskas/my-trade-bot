@@ -9,8 +9,10 @@ history by a wide margin, nearly tripling iteration 14's total PnL while
 higher (+$761.28, PF 2.051) but on a much smaller sample; kept the more
 conservative setting deliberately — see Backtest results and Next steps.
 The engine port described below (`apps/engine`'s `BtcHighRiskStrategy`) has
-since been updated for iteration 15's wick filter — see "Engine port"
-below. The port's own signal-parity gap remains unresolved.
+since been updated for iteration 15's wick filter, and a real root-cause
+bug behind the port's signal-parity gap (the pivot detector's tie-breaking
+rule) has been found and fixed — see "Engine port" below. The gap is
+narrowed, not yet re-verified as closed.
 
 Iteration 14 dropped the 38.2% level (same treatment as 61.8%, same
 diagnostic method), reaching +$232.02 (+23.20%), PF 1.18, live-verified.
@@ -933,8 +935,8 @@ described in iteration 15 above, gating `isBullishConfirmed`/
 `isBearishConfirmed` exactly as the Pine script does. Ported after the
 gap below was already known and unresolved — deliberately not re-verified
 in isolation, since doing so on top of a still-open pivot-detector bug
-would only make the comparison harder to reason about; closing the
-existing gap comes first (see Next steps).
+would have been wasted effort; the pivot fix below and this filter should
+be re-verified together in the next full parity check.
 
 **Framework changes needed to support it** (this strategy's needs didn't
 fit the engine's existing assumptions, built only for the always-in-100%
@@ -1047,6 +1049,37 @@ TypeScript port's `lastPivotHigh`/`lastPivotHighBar`/`lastPivotLow`/
 than only comparing final trade outcomes, which conflates many small
 per-bar disagreements into one hard-to-diagnose aggregate number.
 
+**Root cause found and fixed: the pivot detector's tie-breaking rule.**
+Rather than keep comparing final trade outcomes (which conflates many
+small per-bar disagreements into one hard-to-diagnose aggregate number),
+built an isolated synthetic test directly in the Pine Editor: a small
+`indicator()` script feeding hand-crafted, deterministic source values
+(via a `switch` on a locally-counted bar index, independent of any real
+chart data) into the real built-in `ta.pivothigh`/`ta.pivotlow`, with
+manufactured ties placed once on the left side of a candidate bar and once
+on the right, plus a clean no-tie control. Result, decisively confirmed
+across high, low, and both tie placements: **Pine's pivot functions break
+ties asymmetrically** — a candidate tied by a bar to its right (a later,
+more recent bar) is disqualified, but a tie against a bar to its left (an
+earlier bar) does not disqualify it. In effect, the *last* bar in a run of
+equal extremes wins the pivot, not every tied bar. `PivotSwingTracker`'s
+original `update()` compared the whole rolling window non-strictly
+(`<=`/`>=` against every bar), which let it confirm a pivot at *every*
+tied bar in such a run — extra pivots Pine would never confirm, cascading
+into different swings, Fib zones, and signals downstream. This is very
+likely a real contributor to (though, since it was verified in isolation
+rather than by re-running the full 94-trade check, not proven to fully
+explain) both the 34-missed and especially the 88-extra-signal halves of
+the 63.8% parity result above. Fixed in `PivotSwingTracker.update()`:
+bars left of the candidate still allow ties, bars right of it now require
+strict inequality. Typechecks, builds, and re-ran clean against real data
+via `btcHighRiskSmokeTest.ts` (4 entries over the same ~41-day window,
+non-zero and directionally sane — same shape as before the fix, as
+expected since that quick check never had enough trades to show the
+parity gap clearly in the first place). **Not yet re-verified against a
+fresh 94-trade Pine parity check** — that re-check, not this fix in
+isolation, is what would justify treating the gap as closed.
+
 **Other known gaps, flagged in code comments, not hidden**:
 
 - The liquidation-tied stop is checked once per closed 1h candle against
@@ -1061,10 +1094,11 @@ per-bar disagreements into one hard-to-diagnose aggregate number.
 - Position state (including the recorded stop price) is in-memory only,
   lost on a process restart — same documented limitation `StrategyRunner`
   itself already carries.
-- The pivot detector (`PivotSwingTracker` in `btcHighRisk.ts`) is a
-  best-effort reimplementation of Pine's `ta.pivothigh`/`ta.pivotlow`, not
-  a verified byte-for-byte match — the signal-parity gap above may turn
-  out to be partly this rather than purely a warm-up-length artifact.
+- The pivot detector (`PivotSwingTracker` in `btcHighRisk.ts`) now matches
+  Pine's confirmed tie-breaking rule (see above), but still isn't a
+  verified byte-for-byte match in every other respect — a fresh full parity
+  re-check is still owed before treating it as equivalent to Pine's
+  built-in `ta.pivothigh`/`ta.pivotlow`.
 
 ## Next steps
 
@@ -1076,12 +1110,16 @@ per-bar disagreements into one hard-to-diagnose aggregate number.
    off-by-1h out of 94 real trades, 0 direction mismatches when matched),
    confirming warm-up length was part of the problem but not all of it: 34
    real trades still missed entirely, plus 88 extra port-only signals with
-   no matching real trade. Next concrete step: log both implementations'
-   `lastPivotHigh`/`lastPivotHighBar`/`lastPivotLow`/`lastPivotLowBar` bar-
-   by-bar over the same real window and diff them directly, rather than
-   only comparing final trade outcomes — that will show exactly where and
-   why the two pivot detectors diverge instead of leaving it as one
-   aggregate mismatch number.
+   no matching real trade. **Since then**: found and fixed one confirmed
+   real bug behind this via an isolated synthetic Pine test (not just the
+   trade-outcome comparison) — `PivotSwingTracker`'s tie-breaking didn't
+   match Pine's actual (asymmetric) rule, letting the port confirm extra
+   pivots Pine never would. That's a strong candidate for explaining a good
+   chunk of the 88 extra signals in particular. Next concrete step: **re-run
+   the full 94-trade parity check** (same methodology as the 63.8% result —
+   real Pine trade list vs. the fixed port over the same real window) to
+   get an updated match-rate number. Only once that number is genuinely
+   close to 100% should `BTC_HIGH_RISK_ALLOW_LIVE` even be reconsidered.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74

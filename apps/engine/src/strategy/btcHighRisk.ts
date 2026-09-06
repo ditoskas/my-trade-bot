@@ -39,8 +39,33 @@ class PivotSwingTracker {
     const candidateHigh = toDecimalJs(candidate.high);
     const candidateLow = toDecimalJs(candidate.low);
 
-    const isPivotHigh = this.window.every((c) => toDecimalJs(c.high).lessThanOrEqualTo(candidateHigh));
-    const isPivotLow = this.window.every((c) => toDecimalJs(c.low).greaterThanOrEqualTo(candidateLow));
+    // Pine's ta.pivothigh/ta.pivotlow break ties asymmetrically, confirmed
+    // via an isolated synthetic test in the Pine Editor (see "Engine port"
+    // in strategies/btc-high-risk.md): a candidate tied by a LATER
+    // (right-side) bar is disqualified — the later bar effectively "steals"
+    // the pivot — but a tie against an EARLIER (left-side) bar does not
+    // disqualify it. So left bars allow ties (<=/>=), right bars require
+    // strict inequality (</>).  The original version compared the whole
+    // window non-strictly, which let it confirm extra pivots (at every tied
+    // bar in a run, not just the last) that Pine never confirms — the
+    // leading suspect for the ~36% real-trade mismatch found in the
+    // pre-iteration-15 parity check.
+    let isPivotHigh = true;
+    let isPivotLow = true;
+    for (let i = 0; i < this.window.length; i++) {
+      if (i === this.lookback) {
+        continue;
+      }
+      const h = toDecimalJs(this.window[i].high);
+      const l = toDecimalJs(this.window[i].low);
+      if (i < this.lookback) {
+        if (h.greaterThan(candidateHigh)) isPivotHigh = false;
+        if (l.lessThan(candidateLow)) isPivotLow = false;
+      } else {
+        if (h.greaterThanOrEqualTo(candidateHigh)) isPivotHigh = false;
+        if (l.lessThanOrEqualTo(candidateLow)) isPivotLow = false;
+      }
+    }
 
     if (isPivotHigh) {
       this.lastHigh = candidateHigh;
@@ -107,19 +132,23 @@ export const BTC_HIGH_RISK_AUX_TAG_4H = "240";
 // iteration history, backtest numbers, and reasoning behind each rule.
 // Anything below that isn't a direct translation is called out explicitly.
 //
-// IMPORTANT: this port already had an unresolved signal-parity gap against
+// IMPORTANT: this port had an unresolved signal-parity gap against
 // iteration 14 (63.8% match rate vs. the real Pine backtest, as of the
-// last check) *before* iteration 15's wick-ratio filter was added here.
-// Adding the filter doesn't close that gap — if anything, a filter this
-// selective (iteration 15 cuts iteration 14's trade count by ~25%) will
-// amplify the effect of any remaining pivot-detection divergence between
-// this port and Pine, since a few different "current" swings can now mean
-// the difference between a wick ratio just above or just below the cutoff.
-// This has not been separately re-verified the way the pre-iteration-15
-// parity check was. Do not treat this file matching the Pine script's
-// *logic* as evidence it matches its *numbers* — see "Engine port" in
-// strategies/btc-high-risk.md, and note the BTC_HIGH_RISK_ALLOW_LIVE gate
-// in index.ts keeps this off a real account regardless.
+// last check). Root-caused one real bug behind it: PivotSwingTracker.update
+// compared the whole rolling window non-strictly, but Pine's
+// ta.pivothigh/ta.pivotlow break ties asymmetrically (confirmed via an
+// isolated synthetic test in the Pine Editor, not just documentation) — a
+// candidate tied by a LATER bar is disqualified, a tie against an EARLIER
+// bar is not. The non-strict version confirmed extra pivots Pine never
+// would, which cascades into different swings/Fib zones/signals downstream.
+// Fixed below. This closes one confirmed, real divergence — it has NOT been
+// re-verified end-to-end against a fresh Pine trade-list parity check the
+// way the original 63.8% number was measured, so treat the gap as narrowed,
+// not closed, until that re-check happens. Do not treat this file matching
+// the Pine script's *logic* as evidence it matches its *numbers* — see
+// "Engine port" in strategies/btc-high-risk.md, and note the
+// BTC_HIGH_RISK_ALLOW_LIVE gate in index.ts keeps this off a real account
+// regardless.
 //
 // KNOWN GAPS, not silently papered over — read before trusting this with
 // real capital:
@@ -140,9 +169,10 @@ export const BTC_HIGH_RISK_AUX_TAG_4H = "240";
 //    lost on a process restart, same documented limitation as
 //    StrategyRunner itself. If the engine restarts while a position is
 //    open, the stop is not re-derived from the real entry price.
-// 3. Pivot detection here is a best-effort reimplementation of Pine's
-//    ta.pivothigh/ta.pivotlow, not a verified byte-for-byte match — worth
-//    comparing against the TradingView backtest on live data before
+// 3. Pivot detection's tie-breaking rule now matches Pine's confirmed
+//    behavior (see the IMPORTANT note above), but the rest of the port
+//    still isn't a verified byte-for-byte match — a fresh trade-list parity
+//    re-check against the TradingView backtest is still owed before
 //    trusting exact parity.
 export class BtcHighRiskStrategy implements StrategyAlgorithm {
   readonly slug = "btc-high-risk";
