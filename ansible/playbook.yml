@@ -204,7 +204,19 @@
         # `become_user` needs a working shell to run npm install/build as
         # this user during deploy; nologin breaks that.
         shell: /bin/bash
-        create_home: false
+        # A real home directory, separate from app_dir -- hit live: an
+        # earlier version pointed HOME at app_dir itself (app_dir has no
+        # home dir of its own otherwise, and npm/next need a writable
+        # HOME for their caches). That collided with Turbopack's
+        # monorepo-root auto-detection, which refuses to treat a
+        # directory as the workspace root if it also looks like a user's
+        # HOME ("Next.js ignored package.json in /opt/trade-bot because
+        # it would include your home directory") -- silently falling back
+        # to treating apps/ui as an isolated root with no visibility into
+        # sibling workspace packages, breaking every `@trade-bot/shared`
+        # import and, from there, apparently external deps too.
+        home: "/home/{{ deploy_user }}"
+        create_home: true
 
     - name: Create the application directory
       ansible.builtin.file:
@@ -217,11 +229,29 @@
     # ---------------------------------------------------------------
     # Application code
     # ---------------------------------------------------------------
+    # package-lock.json is excluded deliberately, not just node_modules --
+    # hit live: this repo's lockfile was generated on Windows, and npm
+    # optional dependencies for platform-specific native binaries (here,
+    # Tailwind v4's lightningcss) only get recorded in the lockfile for
+    # whatever platform last ran `npm install` -- a well-known npm
+    # behavior/bug (search "lightningcss" + "optionalDependencies" +
+    # cross-platform lockfile), not something wrong with this repo's
+    # dependencies. `npm install` on the server then had no Linux-x64-gnu
+    # entry to resolve from and skipped it, and the build failed with
+    # "Cannot find module '../lightningcss.linux-x64-gnu.node'". Shipping
+    # no lockfile at all means the server always does a full fresh
+    # resolution from package.json for whatever platform it actually is --
+    # the standard fix for this class of problem. Trade-off: dependency
+    # versions on the server can drift slightly from local dev's exact
+    # locked versions; acceptable for a single personal server, not
+    # something to replicate for a fleet without addressing properly
+    # (e.g. maintaining/committing a lockfile generated on Linux instead).
     - name: Package the application locally (excluding dev/build artifacts and this ansible/ dir)
       ansible.builtin.command:
         cmd: >-
           tar --exclude=.git --exclude=node_modules --exclude=.next
           --exclude=dist --exclude=ansible --exclude=.env
+          --exclude=package-lock.json
           --exclude=*.tsbuildinfo --exclude=.idea
           -czf {{ local_tarball }} -C {{ repo_root_local }} .
       delegate_to: localhost
@@ -245,14 +275,24 @@
       delegate_to: localhost
       become: false
 
+    # unarchive overlays the new tarball's contents, it doesn't delete
+    # files that are no longer in it -- a package-lock.json extracted by
+    # an earlier run (before it was excluded above) would otherwise keep
+    # sitting there and causing the exact cross-platform staleness this
+    # is meant to avoid.
+    - name: Remove any stale package-lock.json from a previous deploy
+      ansible.builtin.file:
+        path: "{{ app_dir }}/package-lock.json"
+        state: absent
+      delegate_to: localhost
+      become: false
+
     - name: Install npm dependencies (all workspaces, including devDependencies for tsx)
       ansible.builtin.command:
         cmd: npm install
         chdir: "{{ app_dir }}"
       become: true
       become_user: "{{ deploy_user }}"
-      environment:
-        HOME: "{{ app_dir }}"
       changed_when: true
 
     - name: Build the UI for production
@@ -261,8 +301,6 @@
         chdir: "{{ app_dir }}"
       become: true
       become_user: "{{ deploy_user }}"
-      environment:
-        HOME: "{{ app_dir }}"
       changed_when: true
 
     - name: Render the .env file
