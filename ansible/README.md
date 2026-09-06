@@ -10,11 +10,13 @@ runs under `systemd`. `apps/chatops` is not deployed by this playbook.
 
 **Read `strategies/btc-high-risk.md`'s "Engine port" section first** if
 you're at all tempted to point this at a real Binance account. The
-TypeScript port of that strategy has a known, unresolved gap against its
-own backtest (63.8% match rate as of the last check) and isn't considered
-safe even for aggressive testnet use yet, let alone real money. This
-playbook deliberately has no variable for `BTC_HIGH_RISK_ALLOW_LIVE` —
-that gate stays off on purpose.
+TypeScript port of that strategy has a known, still-not-fully-closed gap
+against its own backtest (91.9% match rate as of the last check, one
+unresolved edge case, inherent feed-noise divergence still being
+validated live) — understand that before ever setting
+`btc_high_risk_allow_live: true` in your own `all.yml`. Leave it false
+(the default) unless you've made that call deliberately, with capital
+you can afford to lose.
 
 **Ansible's control node (the machine you run `ansible-playbook` from)
 must be Linux, macOS, or WSL — not native Windows.** Ansible doesn't
@@ -199,8 +201,9 @@ a git remote existing anywhere.
   secrets beyond writing them into `{{ app_dir }}/.env` (mode `0600`,
   owned by the dedicated deploy user) — treat `group_vars/all.yml` on your
   own machine as sensitive for the same reason `.env` already is.
-- Doesn't touch `BTC_HIGH_RISK_ALLOW_LIVE` — deliberately not exposed as a
-  variable here.
+- `btc_high_risk_allow_live` defaults to `false` — see the top of this
+  file and `group_vars/all.yml.example`'s comment before ever setting it
+  true.
 
 ## Checking it worked
 

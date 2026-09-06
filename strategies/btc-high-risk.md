@@ -9,20 +9,24 @@ history by a wide margin, nearly tripling iteration 14's total PnL while
 higher (+$761.28, PF 2.051) but on a much smaller sample; kept the more
 conservative setting deliberately — see Backtest results and Next steps.
 The engine port described below (`apps/engine`'s `BtcHighRiskStrategy`) has
-since been updated for iteration 15's wick filter, and a real root-cause
-bug behind the port's signal-parity gap (the pivot detector's tie-breaking
-rule) has been found and fixed — see "Engine port" below. The gap is
-narrowed, not yet re-verified as closed.
+since been updated for iteration 15's wick filter, and two real root-cause
+bugs behind the port's signal-parity gap (pivot tie-breaking, and a
+same-bar stop-then-reenter case) have been found and fixed — see "Engine
+port" below. Match rate against the real Pine backtest reached 91.9%
+before the residual gap (inherent feed-noise divergence plus one
+unresolved 4h-boundary edge case) hit real diminishing returns via
+historical replay. **As of 2026-09-06, this is running on the real
+account with real capital ($150, deliberately sized as affordable to
+lose)** — the user's own explicit, informed decision, made with the gap
+above fully disclosed; see "Engine port" → "Going live" for the record of
+that decision and exactly what changed to implement it.
 
 Iteration 14 dropped the 38.2% level (same treatment as 61.8%, same
 diagnostic method), reaching +$232.02 (+23.20%), PF 1.18, live-verified.
 Only the 50.0% and 78.6% Fib levels remain tradeable. Ported to
-`apps/engine` as `BtcHighRiskStrategy`
-and running on Binance futures **testnet** (real exchange calls, fake
-funds) — see "Engine port" below for what that port found, including an
-**unresolved signal-parity gap** against this Pine backtest that means the
-port is not yet trusted for real capital. See Status detail below and
-Backtest results. Iteration 1 (Fibonacci entries + structural/
+`apps/engine` as `BtcHighRiskStrategy` — see "Engine port" below for the
+full history of what that port found and fixed. Iteration 1 (Fibonacci
+entries + structural/
 capped stop + 100%-or-4h-level take profit) was tested in four
 configurations, live; every one landed in the same 0.5-0.6 profit-factor
 range. Iteration 2 stripped the strategy to entries-only, holding until the
@@ -1315,14 +1319,14 @@ was not touched.
   the pivot detector itself. Still not a verified byte-for-byte match
   against Pine's built-in `ta.pivothigh`/`ta.pivotlow` in the formal
   sense, but no longer the leading suspect.
-- `decide()`'s liquidation-stop check returns immediately on a stop hit,
-  before the entry logic for that same candle ever runs — unlike Pine,
-  whose exit and entry blocks are independent statements that both
-  evaluate every bar. Confirmed as the direct cause of one of the 8
-  missed trades in the parity diagnostic above. Fixing it properly needs
-  `StrategyDecision`/`StrategyRunner` to support "exit then re-enter in
-  the same bar," a change that would affect every strategy, not just this
-  one — not attempted here.
+- `decide()`'s liquidation-stop check used to return immediately on a stop
+  hit, before the entry logic for that same candle ever ran — unlike
+  Pine, whose exit and entry blocks are independent statements that both
+  evaluate every bar. **Fixed** (see "Since fixed" above): `decide()` now
+  evaluates the same bar's entry logic before falling back to a plain
+  exit, and `StrategyRunner` gained a `forceReenter` flag to support the
+  same-side re-entry case. This did turn out to need a
+  `StrategyRunner`-wide change, as originally flagged here.
 
 ## Next steps
 
@@ -1371,10 +1375,25 @@ was not touched.
    same-bar-stop-then-reenter bug first. Fixed (`forceReenter` on
    `StrategyDecision`, see "Engine port" above) — re-verified at **91.9%
    matched-or-close (61 exact + 7 off-by-1h of 74), up from 89.2%**, with
-   the specific known case confirmed resolved. `BTC_HIGH_RISK_ALLOW_LIVE`
-   still stays gated: the live-paper observers above are still the thing
-   that would actually justify reconsidering it, and they've barely had
-   any real elapsed time yet.
+   the specific known case confirmed resolved. **Since then**: the user
+   asked again, explicitly and unambiguously, to go live with no further
+   validation — stating the account will hold $150, an amount deliberately
+   sized as affordable to lose, for exactly this purpose. This is the
+   user's own capital and their informed decision to make, not a
+   correctness dispute to keep re-litigating once it's actually been made
+   with the residual gap above clearly disclosed. Implemented properly
+   rather than as a one-off hack: `BTC_HIGH_RISK_ALLOW_LIVE` is now a real
+   ansible variable (`btc_high_risk_allow_live`, default `false` — see
+   `ansible/group_vars/all.yml.example` and `ansible/README.md`), set
+   `true` in the real deployment's `all.yml`, and `allocatedCapital`/
+   `maxPositionSize` in `index.ts`'s `getOrCreateBtcHighRiskStrategy`
+   changed from the demo strategies' 1000 default to 150 to match. Since
+   that function returns the existing Mongo document unchanged if one
+   already exists, the already-created real document also needed a direct
+   update (see `ansible/README.md` or ask the operator for the exact
+   `mongosh` command used). The live-paper observers keep running and
+   accumulating regardless — they're now validating a strategy that's
+   actually live, which is more informative, not less.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74

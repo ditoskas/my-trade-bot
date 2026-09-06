@@ -195,10 +195,20 @@ async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
     broker: "paper",
     marginMode: "ISOLATED",
     symbols: [BTC_HIGH_RISK_SYMBOL],
-    allocatedCapital: toDecimal128("1000"),
+    // 150, not the demo strategies' 1000 default — matches the real
+    // account balance actually funded for this strategy (see
+    // strategies/btc-high-risk.md's "Going live" note). This is a
+    // completely internal bookkeeping baseline (CapitalLedger.getFreeCapital
+    // falls back to it, see risk/capitalLedger.ts) — it is NOT read from
+    // the real exchange balance, so it must be kept in sync by hand with
+    // whatever's actually funded. If this doc already exists (the common
+    // case — getOrCreateBtcHighRiskStrategy returns the existing doc
+    // unchanged above), changing this default does nothing retroactively;
+    // update the live Mongo document directly instead.
+    allocatedCapital: toDecimal128("150"),
     allocatedCapitalAsset: "USDT",
     riskLimits: {
-      maxPositionSize: toDecimal128("1000"),
+      maxPositionSize: toDecimal128("150"),
       maxConcurrentPositions: 1,
       // Iteration 14's Pine backtest drawdown was 27.92%; iteration 15
       // (this port) improved that to 16.57% in Pine, but that number is

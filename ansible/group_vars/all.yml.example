@@ -81,21 +81,29 @@ engine_control_api_token: "CHANGE ME"
 # this first deployment. ----
 # The engine runs correctly in paper mode with no keys set at all, which is
 # the right starting point regardless of what comes later. Before ever
-# setting BINANCE_FUTURES_API_KEY/SECRET here, read
-# strategies/btc-high-risk.md's "Engine port" section: the TypeScript port
-# of that strategy has a known, unresolved signal-parity gap against its
-# own Pine backtest (63.8% match rate as of the last check) and is not
-# considered safe even for testnet execution in earnest, let alone a real
-# account. There is deliberately no variable here for
-# BTC_HIGH_RISK_ALLOW_LIVE — that gate exists specifically to keep this
-# strategy off a real account until the gap above is closed, and this
-# playbook does not expose a way to set it.
+# setting BINANCE_FUTURES_API_KEY/SECRET here with binance_futures_use_testnet
+# false, read strategies/btc-high-risk.md's "Engine port" section in full:
+# the TypeScript port of that strategy has a known, still-not-fully-closed
+# signal-parity gap against its own Pine backtest (91.9% match rate as of
+# the last check, with one unresolved edge case and inherent feed-noise
+# divergence that live-paper validation is still accumulating evidence on).
 binance_api_key: ""
 binance_api_secret: ""
 binance_futures_api_key: ""
 binance_futures_api_secret: ""
 binance_use_testnet: true
 binance_futures_use_testnet: true
+
+# btc-high-risk specifically also needs THIS set true (in addition to
+# binance_futures_use_testnet: false and real keys above) before it will
+# ever touch a real account — a deliberate second, strategy-specific
+# switch, independent of the shared testnet convention above. Leave this
+# false/absent unless you have personally read strategies/btc-high-risk.md's
+# "Engine port" section, understand the residual gap described there, and
+# are knowingly accepting that risk with capital you can afford to lose —
+# this strategy runs 100x leverage. Do not set this true as a way to get
+# past an error without having made that decision deliberately.
+btc_high_risk_allow_live: false
 
 # ---- Telegram chatops — OPTIONAL. apps/chatops isn't deployed by this
 # playbook (UI + engine only, per this deployment's scope) — these are
