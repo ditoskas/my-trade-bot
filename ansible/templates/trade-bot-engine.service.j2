@@ -1,0 +1,19 @@
+[Unit]
+Description=Trade Bot Engine (paper/testnet — see strategies/btc-high-risk.md before ever changing that)
+After=network.target mongod.service redis-server.service
+Requires=mongod.service redis-server.service
+
+[Service]
+Type=simple
+User={{ deploy_user }}
+Group={{ deploy_user }}
+WorkingDirectory={{ app_dir }}
+EnvironmentFile={{ app_dir }}/.env
+ExecStart=/usr/bin/npm run start --workspace=@trade-bot/engine
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

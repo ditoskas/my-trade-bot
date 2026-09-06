@@ -10,3 +10,8 @@ dist/
 .env
 .env.*
 !.env.example
+
+# ansible/group_vars/all.yml holds real SSH/domain/basic-auth/API secrets
+# filled in from all.yml.example — never commit the filled-in version.
+ansible/group_vars/all.yml
+ansible/*.retry

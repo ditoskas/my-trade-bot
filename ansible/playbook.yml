@@ -1,0 +1,334 @@
+---
+# First-deployment playbook for the trade-bot UI + engine, running paper/
+# testnet as currently configured (see strategies/btc-high-risk.md before
+# ever pointing this at a real account). Everything runs as native
+# system services on the target host — no containers, per explicit
+# instruction: Node.js, MongoDB, and Redis are all installed directly via
+# the distro's package manager, and the app itself runs under systemd.
+#
+# Usage (from the repo root):
+#   cd ansible
+#   cp group_vars/all.yml.example group_vars/all.yml   # then fill it in
+#   ansible-galaxy collection install community.general
+#   ansible-playbook -i inventory.yml playbook.yml
+#
+# See README.md for prerequisites and what this does and doesn't cover.
+
+- name: Deploy trade-bot UI + engine (paper/testnet) behind nginx
+  hosts: trade_bot
+  become: true
+  vars:
+    repo_root_local: "{{ playbook_dir }}/.."
+    local_tarball: "/tmp/trade-bot-deploy.tar.gz"
+
+  tasks:
+    # ---------------------------------------------------------------
+    # Base packages
+    # ---------------------------------------------------------------
+    - name: Ensure base apt packages are present
+      ansible.builtin.apt:
+        name:
+          - nginx
+          - python3-passlib # required by community.general.htpasswd
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Ensure certbot is present (only needed when HTTPS is enabled)
+      ansible.builtin.apt:
+        name:
+          - certbot
+          - python3-certbot-nginx
+        state: present
+      when: enable_https | bool
+
+    # ---------------------------------------------------------------
+    # Node.js (NodeSource — Ubuntu's own apt repos usually carry an
+    # older Node than this project needs)
+    # ---------------------------------------------------------------
+    - name: Check whether the required Node.js major version is already installed
+      ansible.builtin.command: node --version
+      register: node_version_check
+      changed_when: false
+      failed_when: false
+
+    - name: Add the NodeSource setup script
+      ansible.builtin.get_url:
+        url: "https://deb.nodesource.com/setup_{{ node_version }}.x"
+        dest: /tmp/nodesource_setup.sh
+        mode: "0755"
+      when: >
+        node_version_check.rc != 0 or
+        (node_version + '.') not in (node_version_check.stdout | default('') | regex_replace('^v', ''))
+
+    - name: Run the NodeSource setup script
+      ansible.builtin.command: /tmp/nodesource_setup.sh
+      when: >
+        node_version_check.rc != 0 or
+        (node_version + '.') not in (node_version_check.stdout | default('') | regex_replace('^v', ''))
+
+    - name: Install Node.js
+      ansible.builtin.apt:
+        name: nodejs
+        state: present
+        update_cache: true
+
+    # ---------------------------------------------------------------
+    # MongoDB (native package, not a container) — bound to localhost
+    # only, matching the repo's own dev docker-compose.yml convention
+    # of never exposing it beyond the box that runs it.
+    # ---------------------------------------------------------------
+    - name: Ensure the apt keyrings directory exists
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download MongoDB's GPG key
+      ansible.builtin.get_url:
+        url: "https://pgp.mongodb.com/server-{{ mongodb_version }}.asc"
+        dest: /tmp/mongodb-server.asc
+        mode: "0644"
+
+    - name: Dearmor MongoDB's GPG key into the apt keyrings directory
+      ansible.builtin.command:
+        cmd: "gpg --yes --dearmor -o /etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg /tmp/mongodb-server.asc"
+        creates: "/etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg"
+
+    - name: Add the MongoDB apt repository
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [ arch=amd64,arm64 signed-by=/etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg ] https://repo.mongodb.org/apt/ubuntu
+          {{ ansible_distribution_release }}/mongodb-org/{{ mongodb_version }} multiverse
+        filename: "mongodb-org-{{ mongodb_version }}"
+        state: present
+        update_cache: true
+
+    - name: Install MongoDB
+      ansible.builtin.apt:
+        name: mongodb-org
+        state: present
+
+    - name: Ensure MongoDB binds to localhost only
+      ansible.builtin.lineinfile:
+        path: /etc/mongod.conf
+        regexp: "^(\\s*bindIp:).*"
+        line: "  bindIp: 127.0.0.1"
+      notify: Restart mongod
+
+    - name: Enable and start MongoDB
+      ansible.builtin.systemd:
+        name: mongod
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ---------------------------------------------------------------
+    # Redis (native package) — Ubuntu's default redis-server config
+    # already binds to 127.0.0.1 only.
+    # ---------------------------------------------------------------
+    - name: Install Redis
+      ansible.builtin.apt:
+        name: redis-server
+        state: present
+
+    - name: Ensure Redis is set up for systemd supervision
+      ansible.builtin.lineinfile:
+        path: /etc/redis/redis.conf
+        regexp: "^supervised .*"
+        line: "supervised systemd"
+      notify: Restart redis
+
+    - name: Enable and start Redis
+      ansible.builtin.systemd:
+        name: redis-server
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ---------------------------------------------------------------
+    # Dedicated non-root user + app directory
+    # ---------------------------------------------------------------
+    - name: Create the dedicated deploy user
+      ansible.builtin.user:
+        name: "{{ deploy_user }}"
+        system: true
+        # A real shell, not /usr/sbin/nologin — this user has no password
+        # and no SSH key of its own, so it can't log in either way, but
+        # `become_user` needs a working shell to run npm install/build as
+        # this user during deploy; nologin breaks that.
+        shell: /bin/bash
+        create_home: false
+
+    - name: Create the application directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0750"
+
+    # ---------------------------------------------------------------
+    # Application code
+    # ---------------------------------------------------------------
+    - name: Package the application locally (excluding dev/build artifacts and this ansible/ dir)
+      ansible.builtin.command:
+        cmd: >-
+          tar --exclude=.git --exclude=node_modules --exclude=.next
+          --exclude=dist --exclude=ansible --exclude=.env
+          --exclude=*.tsbuildinfo --exclude=.idea
+          -czf {{ local_tarball }} -C {{ repo_root_local }} .
+      delegate_to: localhost
+      become: false
+      changed_when: true
+
+    - name: Upload and extract the application archive
+      ansible.builtin.unarchive:
+        src: "{{ local_tarball }}"
+        dest: "{{ app_dir }}"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+      notify:
+        - Restart trade-bot-engine
+        - Restart trade-bot-ui
+
+    - name: Remove the local tarball
+      ansible.builtin.file:
+        path: "{{ local_tarball }}"
+        state: absent
+      delegate_to: localhost
+      become: false
+
+    - name: Install npm dependencies (all workspaces, including devDependencies for tsx)
+      ansible.builtin.command:
+        cmd: npm install
+        chdir: "{{ app_dir }}"
+      become: true
+      become_user: "{{ deploy_user }}"
+      environment:
+        HOME: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Build the UI for production
+      ansible.builtin.command:
+        cmd: npm run build --workspace=@trade-bot/ui
+        chdir: "{{ app_dir }}"
+      become: true
+      become_user: "{{ deploy_user }}"
+      environment:
+        HOME: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Render the .env file
+      ansible.builtin.template:
+        src: app.env.j2
+        dest: "{{ app_dir }}/.env"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0600"
+      notify:
+        - Restart trade-bot-engine
+        - Restart trade-bot-ui
+
+    # ---------------------------------------------------------------
+    # systemd services
+    # ---------------------------------------------------------------
+    - name: Install the trade-bot-engine systemd unit
+      ansible.builtin.template:
+        src: trade-bot-engine.service.j2
+        dest: /etc/systemd/system/trade-bot-engine.service
+        mode: "0644"
+      notify: Restart trade-bot-engine
+
+    - name: Install the trade-bot-ui systemd unit
+      ansible.builtin.template:
+        src: trade-bot-ui.service.j2
+        dest: /etc/systemd/system/trade-bot-ui.service
+        mode: "0644"
+      notify: Restart trade-bot-ui
+
+    - name: Enable and start trade-bot-engine
+      ansible.builtin.systemd:
+        name: trade-bot-engine
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable and start trade-bot-ui
+      ansible.builtin.systemd:
+        name: trade-bot-ui
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    # ---------------------------------------------------------------
+    # nginx: basic auth + vhost (creates it if it doesn't exist yet;
+    # re-running just re-templates it idempotently)
+    # ---------------------------------------------------------------
+    - name: Set the dashboard's basic auth password
+      community.general.htpasswd:
+        path: /etc/nginx/.htpasswd-tradebot
+        name: "{{ basic_auth_username }}"
+        password: "{{ basic_auth_password }}"
+        owner: root
+        group: www-data
+        mode: "0640"
+
+    - name: Install the nginx vhost for the dashboard
+      ansible.builtin.template:
+        src: nginx-vhost.conf.j2
+        dest: "/etc/nginx/sites-available/{{ domain_name }}.conf"
+        mode: "0644"
+      notify: Reload nginx
+
+    - name: Enable the vhost
+      ansible.builtin.file:
+        src: "/etc/nginx/sites-available/{{ domain_name }}.conf"
+        dest: "/etc/nginx/sites-enabled/{{ domain_name }}.conf"
+        state: link
+      notify: Reload nginx
+
+    - name: Flush handlers so nginx is serving the vhost before certbot runs
+      ansible.builtin.meta: flush_handlers
+
+    - name: Obtain/renew the HTTPS certificate and wire it into the vhost
+      ansible.builtin.command:
+        cmd: >-
+          certbot --nginx -d {{ domain_name }} --non-interactive --agree-tos
+          -m {{ letsencrypt_email }} --redirect
+      register: certbot_result
+      # certbot is idempotent regardless — it skips renewal on its own if
+      # the existing cert isn't due yet. This is an approximate signal for
+      # Ansible's own changed/ok reporting, not something correctness
+      # depends on.
+      changed_when: "'not yet due for renewal' not in certbot_result.stdout"
+      when: enable_https | bool
+
+  handlers:
+    - name: Restart mongod
+      ansible.builtin.systemd:
+        name: mongod
+        state: restarted
+
+    - name: Restart redis
+      ansible.builtin.systemd:
+        name: redis-server
+        state: restarted
+
+    - name: Restart trade-bot-engine
+      ansible.builtin.systemd:
+        name: trade-bot-engine
+        state: restarted
+        daemon_reload: true
+
+    - name: Restart trade-bot-ui
+      ansible.builtin.systemd:
+        name: trade-bot-ui
+        state: restarted
+        daemon_reload: true
+
+    - name: Reload nginx
+      ansible.builtin.shell: nginx -t && systemctl reload nginx
+      changed_when: true

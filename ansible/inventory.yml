@@ -1,0 +1,12 @@
+# Symbolic host name only — the actual server address, SSH user, port, and
+# key all live in group_vars/all.yml (see all.yml.example) so everything
+# you need to fill in is in one place, not split across two files.
+all:
+  children:
+    trade_bot:
+      hosts:
+        trade_bot_server:
+          ansible_host: "{{ server_host }}"
+          ansible_user: "{{ ssh_username }}"
+          ansible_port: "{{ ssh_port }}"
+          ansible_ssh_private_key_file: "{{ (ssh_private_key_file | default('')) or omit }}"

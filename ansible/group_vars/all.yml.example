@@ -1,0 +1,80 @@
+# ============================================================================
+# Fill in every "CHANGE ME" below, then copy this file to all.yml:
+#
+#   cp ansible/group_vars/all.yml.example ansible/group_vars/all.yml
+#
+# all.yml is gitignored (see .gitignore) — it will hold real secrets
+# (SSH details, the dashboard password, API tokens) once filled in, and
+# must never be committed.
+# ============================================================================
+
+# ---- SSH connection to the target server ----
+server_host: "CHANGE ME"          # e.g. 203.0.113.10, or a hostname
+ssh_username: "CHANGE ME"         # e.g. root, or a sudo-capable user
+ssh_port: 22
+# Path to the private key Ansible should use (e.g. "~/.ssh/id_ed25519").
+# Leave as "" to fall back to your default SSH agent/key instead.
+ssh_private_key_file: ""
+
+# ---- Domain / nginx ----
+domain_name: "trade.toskas.gr"
+# Requires DNS for domain_name already pointing at server_host, and port 80
+# reachable from the internet, before you set this true (Let's Encrypt's
+# HTTP-01 challenge needs both). Start with false, confirm the site loads
+# over plain HTTP, then flip to true and re-run the playbook.
+enable_https: false
+letsencrypt_email: "CHANGE ME"    # required if enable_https is true
+
+# ---- Web dashboard password ----
+# This is nginx basic auth in front of the whole dashboard — separate from,
+# and not to be confused with, SSH access to the server itself. Anyone
+# without this username/password gets a browser login prompt and nothing
+# else, before ever reaching the Next.js app.
+basic_auth_username: "CHANGE ME"
+basic_auth_password: "CHANGE ME"  # plain text here only — Ansible hashes it on the server; the plaintext is never stored there
+
+# ---- Deployment layout ----
+deploy_user: "tradebot"           # dedicated non-root system user the app runs as
+app_dir: "/opt/trade-bot"
+node_version: "22"                # matches this repo's @types/node / engine dependency
+ui_port: 3000
+engine_control_api_port: 4001     # never exposed outside 127.0.0.1 — nginx only ever proxies ui_port
+
+# ---- MongoDB / Redis ----
+# Installed as native system services on this same server (no containers),
+# each bound to 127.0.0.1 only — never reachable from outside the box.
+mongodb_version: "7.0"            # matches docker-compose.yml's mongo:7.0, for local/prod parity
+mongodb_uri: "mongodb://localhost:27017/trade-bot-dev"
+redis_url: "redis://localhost:6379"
+
+# ---- Generated secret ----
+# A real random value the engine's internal control API and the UI's
+# server-side proxy to it both use to authenticate to each other. Generate
+# one with, e.g.:  openssl rand -hex 32
+engine_control_api_token: "CHANGE ME"
+
+# ---- Binance credentials — OPTIONAL, leave every one of these blank for
+# this first deployment. ----
+# The engine runs correctly in paper mode with no keys set at all, which is
+# the right starting point regardless of what comes later. Before ever
+# setting BINANCE_FUTURES_API_KEY/SECRET here, read
+# strategies/btc-high-risk.md's "Engine port" section: the TypeScript port
+# of that strategy has a known, unresolved signal-parity gap against its
+# own Pine backtest (63.8% match rate as of the last check) and is not
+# considered safe even for testnet execution in earnest, let alone a real
+# account. There is deliberately no variable here for
+# BTC_HIGH_RISK_ALLOW_LIVE — that gate exists specifically to keep this
+# strategy off a real account until the gap above is closed, and this
+# playbook does not expose a way to set it.
+binance_api_key: ""
+binance_api_secret: ""
+binance_futures_api_key: ""
+binance_futures_api_secret: ""
+binance_use_testnet: true
+binance_futures_use_testnet: true
+
+# ---- Telegram chatops — OPTIONAL. apps/chatops isn't deployed by this
+# playbook (UI + engine only, per this deployment's scope) — these are
+# unused for now, kept here so the .env shape matches .env.example. ----
+telegram_bot_token: ""
+telegram_allowed_chat_ids: ""
