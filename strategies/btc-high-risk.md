@@ -1,9 +1,22 @@
 # BTC High-Risk
 
-**Status:** draft, iteration 14 for the Pine script — also dropped the
-38.2% level (same treatment as 61.8%, same diagnostic method), now
-+$232.02 (+23.20%), PF 1.18, live-verified. Only the 50.0% and 78.6% Fib
-levels remain tradeable. Ported to `apps/engine` as `BtcHighRiskStrategy`
+**Status:** draft, iteration 15 for the Pine script — a 4h candle wick-
+ratio entry filter (only trade when the 4h candle at entry shows real
+rejection, not a clean trending candle) took this to +$617.22 (+61.72%),
+PF 1.602, DD 16.57%, live-verified — the best result in this strategy's
+history by a wide margin, nearly tripling iteration 14's total PnL while
+*improving* drawdown at the same time. A stricter threshold tested even
+higher (+$761.28, PF 2.051) but on a much smaller sample; kept the more
+conservative setting deliberately — see Backtest results and Next steps.
+The engine port described below (`apps/engine`'s `BtcHighRiskStrategy`)
+has **not yet been updated for this iteration** — it still reflects
+iteration 14's logic (no wick filter) until the port's own signal-parity
+gap is resolved; see "Engine port" below.
+
+Iteration 14 dropped the 38.2% level (same treatment as 61.8%, same
+diagnostic method), reaching +$232.02 (+23.20%), PF 1.18, live-verified.
+Only the 50.0% and 78.6% Fib levels remain tradeable. Ported to
+`apps/engine` as `BtcHighRiskStrategy`
 and running on Binance futures **testnet** (real exchange calls, fake
 funds) — see "Engine port" below for what that port found, including an
 **unresolved signal-parity gap** against this Pine backtest that means the
@@ -234,6 +247,25 @@ design.
     +$232.02), PF improved (1.136 → 1.18), though trade count dropped
     sharply (94 → 74, since only two levels can trigger an entry now) and
     drawdown ticked up slightly (26.77% → 27.92%).
+13. **4h candle wick-ratio filter (iteration 15)**: an entry is only taken
+    if the 4h candle containing it has a wick ratio (`1 - |close-open| /
+    (high-low)`) of at least `minWick4hRatio` (default 0.5) — i.e. the 4h
+    candle must show real rejection (a big wick relative to its range),
+    not a clean, mostly-body trending candle. Found via a fresh diagnostic
+    pass explicitly requested by the user: analyzed real 15m and 4h
+    context around all 74 of iteration 14's trades (fetched directly from
+    Binance, not guessed) and compared winners against losers. Winners'
+    4h candle averaged a 0.635 wick ratio vs losers' 0.549 — a real,
+    intuitive pattern: a big wick suggests genuine exhaustion/rejection at
+    this level (consistent with a reversal), while a clean low-wick candle
+    suggests strong continuation momentum fighting a counter-trend Fib
+    entry. A threshold sweep on that same data showed a strong, real
+    effect (not just noise at one arbitrary cutoff): 0.5 → 45 trades, PF
+    1.663; 0.6 → 33 trades, PF 2.341 (both far above the unfiltered 1.18).
+    Live-verified in Pine (the authoritative number, not the offline
+    estimate): 0.5 → +$617.22, PF 1.602, DD 16.57%, 56 trades; 0.6 →
+    +$761.28, PF 2.051, DD 15.47%, 40 trades. Kept **0.5** deliberately —
+    see Backtest results and Next steps for why, and for revisiting 0.6.
 
 ## Stop loss logic
 
@@ -325,6 +357,7 @@ ratio than a nearby fixed/structural target.
 | Min 4h zone width ($) | $2000 | iteration 10 |
 | Session start hour (UTC) | 20 | iteration 11 |
 | Session end hour (UTC) | 6 | iteration 11 |
+| Min 4h candle wick ratio at entry | 0.5 | iteration 15 — 0.6 tested stronger (PF 2.051 vs 1.602) but on a smaller sample (40 vs 56 trades); worth revisiting if a larger out-of-sample test still favors it |
 
 ## Pine Script v6
 
@@ -359,6 +392,7 @@ riskPct786       = input.float(2.0, "Risk % of equity at 78.6% (iteration 6)")
 minZoneWidth     = input.float(2000, "Min 4h zone width ($) to allow a trade (iteration 10)")
 sessionStartHour = input.int(20, "Session start hour (UTC, inclusive, iteration 11)")
 sessionEndHour   = input.int(6, "Session end hour (UTC, inclusive, iteration 11)")
+minWick4hRatio   = input.float(0.5, "Min 4h candle wick ratio at entry (iteration 15)", minval = 0, maxval = 1, step = 0.05)
 
 // ---- Liquidation-tied stop (iteration 12) ----
 // Stop distance is now exactly 1/leverage -- the theoretical 100%-of-margin
@@ -450,6 +484,18 @@ f_swingInfo(len) =>
 
 [trend4h, zoneWidth4h] = request.security(syminfo.tickerid, "240", f_swingInfo(pivotLeftRight), lookahead = barmerge.lookahead_off)
 
+// ---- 4h candle wick ratio at entry (iteration 15) ----
+// Diagnostic finding: on the live 74-trade iteration-14 sample, winners'
+// 4h candle (the one containing the entry) had a materially bigger wick
+// relative to its range than losers' (avg 0.635 vs 0.549) -- a big 4h
+// wick suggests real rejection/exhaustion at this level, consistent with
+// a genuine reversal; a "clean" low-wick 4h candle suggests strong
+// continuation momentum fighting this counter-trend Fib entry.
+[o4h, h4h, l4h, c4h] = request.security(syminfo.tickerid, "240", [open, high, low, close], lookahead = barmerge.lookahead_off)
+wick4hRange = h4h - l4h
+wick4hRatio = wick4hRange != 0 ? 1 - math.abs(c4h - o4h) / wick4hRange : 0
+validWick4h = wick4hRatio >= minWick4hRatio
+
 validZone4h = not na(zoneWidth4h) and zoneWidth4h >= minZoneWidth
 
 // EMA/VWAP confluence was tried here (iteration 9) and reverted -- it made
@@ -468,8 +514,8 @@ validZone4h = not na(zoneWidth4h) and zoneWidth4h >= minZoneWidth
 barHourUTC  = hour(time, "UTC")
 inNightSess = barHourUTC >= sessionStartHour or barHourUTC <= sessionEndHour
 
-isBullishConfirmed = isBullish and trend4h == 1 and validZone4h and inNightSess
-isBearishConfirmed = isBearish and trend4h == -1 and validZone4h and inNightSess
+isBullishConfirmed = isBullish and trend4h == 1 and validZone4h and inNightSess and validWick4h
+isBearishConfirmed = isBearish and trend4h == -1 and validZone4h and inNightSess and validWick4h
 
 // ---- Position state ----
 var float stopPrice = na
@@ -803,6 +849,76 @@ drop concentrates risk into fewer, larger trades. Only 50.0% and 78.6%
 remain tradeable. 95/95 diagnostic log entries matched to trades with zero
 discrepancies.
 
+**Iteration 15 (4h candle wick-ratio entry filter), same date range:**
+
+User-requested diagnostic, different in kind from the level-dropping
+diagnostics above: rather than checking which Fib level triggered, this
+one fetched real 15m and real 4h candles directly from Binance around all
+74 of iteration 14's real trades and compared context *around the entry*
+between winners and losers. Several 15m/4h features were checked
+(15m RSI, 15m ATR%, 15m wick ratios over the preceding few candles, 4h
+RSI, 4h candle wick ratio, distance to the nearest recent 4h swing
+extreme) — full methodology and numbers below.
+
+**15m RSI** showed a real, direction-independent pattern: in both LONG
+trades (winners avg 36.9 vs losers 42.2) and SHORT trades (winners avg
+53.9 vs losers 57.7), winners entered on a *more washed-out* 15m momentum
+reading than losers, regardless of which direction was being traded —
+intuitively consistent with a mean-reversion strategy (the deeper the
+exhaustion, the better the reversal entry). Flagged as a real finding, not
+yet acted on this iteration — see Next steps.
+
+**4h candle wick ratio** (`1 - |close-open|/(high-low)` of the 4h candle
+containing the entry) was the strongest single signal found: winners
+averaged 0.635, losers 0.549. A threshold sweep on the same 74-trade
+dataset (offline estimate, not yet the real Pine numbers):
+
+| Threshold | Trades kept | Win rate | Profit factor | Total PnL |
+|---|---|---|---|---|
+| none (iteration 14) | 74 | 25.7% | 1.18 | +$232.0 |
+| ≥0.5 | 45 | 31.1% | 1.663 | +$426.1 |
+| ≥0.6 | 33 | 36.4% | 2.341 | +$555.9 |
+
+**Distance to the nearest recent 4h swing extreme** showed a similar,
+real-but-smaller effect (winners avg 2.50% away, losers avg 1.85%) —
+entries closer to a recent 4h high/low did worse, plausibly because
+there's less room for the reversal to develop and/or the level is more
+likely to be retested/broken. Not acted on this iteration (see Next
+steps) — the wick-ratio filter was the stronger, cleaner signal of the
+two and iteration discipline says test one variable at a time.
+
+Implemented the 4h wick-ratio filter and live-verified both thresholds
+in Pine (the authoritative numbers, not the offline estimate above):
+
+| Metric | Iteration 14 (no filter) | 0.5 threshold | 0.6 threshold |
+|---|---|---|---|
+| Total PnL | +$232.02 (+23.20%) | **+$617.22 (+61.72%)** | +$761.28 (+76.13%) |
+| Win rate | 25.68% (19/74) | 28.57% (16/56) | 32.50% (13/40) |
+| Profit factor | 1.18 | **1.602** | 2.051 |
+| Max drawdown | 27.92% | **16.57%** | 15.47% |
+
+Both thresholds are dramatic, genuine improvements over iteration 14 —
+0.5 nearly triples total PnL while *also* improving drawdown by 11
+points, not trading one for the other. 0.6 is stronger still on every
+metric, but the trade count has now shrunk to 40 (from an original
+~190+ signal pool, after three cumulative filters this session: two
+Fib-level drops plus this wick filter) — small enough, and the 0.5→0.6
+improvement large and close to linear enough, that it reads more like a
+real risk of curve-fitting a shrinking sample than a plateauing genuine
+effect. **Kept 0.5 deliberately** as the more conservative choice; **0.6
+is recorded here to revisit later** if a proper out-of-sample check
+(different date range/symbol — already the top item in Next steps)
+still favors it once tested on data this filter wasn't tuned against.
+
+Methodology: `apps/engine/src/scripts/_tmpLossPatternAnalysis.ts` (a
+temporary, uncommitted script — not part of the repo) fetched 22,081 real
+15m candles and 1,380 real 4h candles from Binance covering the full
+trade history, joined them to all 74 trades by entry timestamp, computed
+the features above per trade, and compared winner/loser distributions and
+threshold sweeps. The Pine implementation and its live-verified numbers
+are the authoritative result; the offline script was only used to decide
+which threshold was worth testing in Pine, not trusted on its own.
+
 ## Engine port
 
 This strategy's Pine script (iteration 14) was ported to a real TypeScript
@@ -810,6 +926,13 @@ This strategy's Pine script (iteration 14) was ported to a real TypeScript
 actually run in `apps/engine` rather than only backtest on TradingView.
 This is genuinely new capability, not just a doc update, so it's recorded
 here rather than as another Pine iteration.
+
+**Not yet updated for iteration 15's wick filter.** The port described
+below still reflects iteration 14's logic exactly — no 4h wick-ratio
+check. Given the port already has an unresolved signal-parity gap against
+iteration 14 (below), porting iteration 15 on top of that unresolved gap
+would only make the comparison harder to reason about; closing the
+existing gap comes first (see Next steps).
 
 **Framework changes needed to support it** (this strategy's needs didn't
 fit the engine's existing assumptions, built only for the always-in-100%
@@ -958,26 +1081,42 @@ per-bar disagreements into one hard-to-diagnose aggregate number.
    why the two pivot detectors diverge instead of leaving it as one
    aggregate mismatch number.
 1. **Re-verify on a different date range or symbol** before trusting this
-   margin — a ~$232 edge over 74 trades on one window is real progress, not
-   proof. This is the single most important unfinished check, more so now
-   that the margin is bigger and trade count keeps shrinking.
-2. **Watch for over-fitting from repeated level-dropping**: two levels are
-   gone now, each decision individually justified by real diagnostic data,
-   but the strategy is down to 74 trades from an original ~190+ signal
-   pool. If a third level ever looks weak, that's a much smaller sample to
-   trust — treat any future level cut with more skepticism than this one.
-3. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
+   margin — now the single most urgent item by far. Iteration 15's +$617
+   (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
+   trades), on the same one BTCUSDT window every iteration this session has
+   been tuned against. A result this much better, found by testing several
+   candidate features and picking the best one, is exactly the shape of
+   result that most needs an out-of-sample check before being trusted.
+2. **Revisit the 0.6 wick-ratio threshold** (currently 0.5) if the
+   out-of-sample check above still favors it once tested on data this
+   filter wasn't tuned against — live-verified at +$761.28, PF 2.051, DD
+   15.47% on 40 trades, better than 0.5 on every metric, but not chosen
+   initially given the shrinking sample (see iteration 15 in Backtest
+   results for the full reasoning).
+3. **Act on the 15m RSI finding** from iteration 15's diagnostic (winners
+   consistently enter on more washed-out 15m momentum than losers, in both
+   directions) — found but not yet acted on this iteration, since testing
+   the wick-ratio filter first was the priority. A candidate filter (e.g.
+   require 15m RSI beyond some distance from 50 in the retracement
+   direction) is worth the same live-verification treatment.
+4. **Watch for over-fitting from repeated filter-stacking**: two Fib
+   levels are gone and a wick-ratio filter has been added, each
+   individually justified by real diagnostic data, but the strategy is
+   down to 56 trades from an original ~190+ signal pool. Each additional
+   filter should be held to a higher bar of skepticism than the last, and
+   out-of-sample validation (item 1) matters more with every one added.
+5. Iteration 9 showed that naive trend-confluence (EMA/VWAP requiring price
    already past a breakout) actively fights the Fib pullback logic. Any
    future confluence attempt needs to check *momentum turning*, not just
    trend alignment — e.g. price reclaiming the fast EMA from below on the
    bounce, not already being above it.
-4. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
+6. Consider whether the 1h/4h timeframe pair is fundamentally mismatched
    with 100x leverage — real scalping research points to 1-5 minute charts
    with 0.25-0.5% targets, not multi-hour swing holds. Not tested this
    session.
-5. Re-verify iteration 3's ADX-filter result under the now-fixed swing
+7. Re-verify iteration 3's ADX-filter result under the now-fixed swing
    logic — it was tested against the buggy trend direction, so that result
    is no longer trustworthy either way.
-6. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
+8. Investigate the -3.95% biggest-loss outlier under the -1% stop (iteration
    8's List of Trades) — likely a real gap-through-the-stop case given 1h
    BTC candle size, not a bug, but worth a quick check before assuming so.
