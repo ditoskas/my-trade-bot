@@ -399,6 +399,17 @@
     # nginx: basic auth + vhost (creates it if it doesn't exist yet;
     # re-running just re-templates it idempotently)
     # ---------------------------------------------------------------
+    # Hit live: nginx was installed (apt) but not actually running on the
+    # target server -- "already running nginx" per the deployment's own
+    # premise turned out to mean "installed," not "started." The base
+    # apt task only ensures the package is present, never the service
+    # state, so make that explicit here too.
+    - name: Ensure nginx is enabled and started
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
     - name: Set the dashboard's basic auth password
       community.general.htpasswd:
         path: /etc/nginx/.htpasswd-tradebot
@@ -462,5 +473,8 @@
         daemon_reload: true
 
     - name: Reload nginx
-      ansible.builtin.shell: nginx -t && systemctl reload nginx
+      # reload-or-restart, not reload -- reload fails outright if nginx
+      # isn't already running (harmless now that it's explicitly started
+      # above, but a cheap defensive improvement regardless).
+      ansible.builtin.shell: nginx -t && systemctl reload-or-restart nginx
       changed_when: true
