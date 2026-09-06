@@ -91,15 +91,35 @@ export interface BtcHighRiskConfig {
   // converted to a 0-1 fraction internally.
   riskPct500?: number;
   riskPct786?: number;
+  // 0-1 fraction directly (not a percentage like the risk inputs above) —
+  // matches the Pine input's own 0-1 range. See iteration 15 in
+  // strategies/btc-high-risk.md: winners' 4h candle at entry averaged a
+  // 0.635 wick ratio vs losers' 0.549; kept 0.5 there deliberately over a
+  // stronger-but-smaller-sample 0.6.
+  minWick4hRatio?: number;
 }
 
 // The 4h auxiliary feed's tag — see StrategyAlgorithm.onAuxCandle.
 export const BTC_HIGH_RISK_AUX_TAG_4H = "240";
 
-// TypeScript port of strategies/btc-high-risk.md's iteration 14 Pine
+// TypeScript port of strategies/btc-high-risk.md's iteration 15 Pine
 // script. Ported mechanically from that file — see it for the full
 // iteration history, backtest numbers, and reasoning behind each rule.
 // Anything below that isn't a direct translation is called out explicitly.
+//
+// IMPORTANT: this port already had an unresolved signal-parity gap against
+// iteration 14 (63.8% match rate vs. the real Pine backtest, as of the
+// last check) *before* iteration 15's wick-ratio filter was added here.
+// Adding the filter doesn't close that gap — if anything, a filter this
+// selective (iteration 15 cuts iteration 14's trade count by ~25%) will
+// amplify the effect of any remaining pivot-detection divergence between
+// this port and Pine, since a few different "current" swings can now mean
+// the difference between a wick ratio just above or just below the cutoff.
+// This has not been separately re-verified the way the pre-iteration-15
+// parity check was. Do not treat this file matching the Pine script's
+// *logic* as evidence it matches its *numbers* — see "Engine port" in
+// strategies/btc-high-risk.md, and note the BTC_HIGH_RISK_ALLOW_LIVE gate
+// in index.ts keeps this off a real account regardless.
 //
 // KNOWN GAPS, not silently papered over — read before trusting this with
 // real capital:
@@ -136,9 +156,16 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
   private readonly sessionEndHour: number;
   private readonly riskFraction500: number;
   private readonly riskFraction786: number;
+  private readonly minWick4hRatio: number;
 
   private readonly pivot1h: PivotSwingTracker;
   private readonly pivot4h: PivotSwingTracker;
+
+  // The most recent 4h candle's OHLC, updated by onAuxCandle — used to
+  // compute the wick-ratio filter (iteration 15) at 1h decision time. Null
+  // until at least one 4h candle has arrived (during warm-up or right
+  // after startup).
+  private last4hCandle: Candle | null = null;
 
   // Reconciled against the runner's actual position state at the top of
   // every decide() call, not trusted blindly — if an ENTER signal we
@@ -158,6 +185,7 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     this.sessionEndHour = config.sessionEndHour ?? 6;
     this.riskFraction500 = (config.riskPct500 ?? 1.0) / 100;
     this.riskFraction786 = (config.riskPct786 ?? 2.0) / 100;
+    this.minWick4hRatio = config.minWick4hRatio ?? 0.5;
 
     this.pivot1h = new PivotSwingTracker(pivotLeftRight);
     this.pivot4h = new PivotSwingTracker(pivotLeftRight);
@@ -166,6 +194,7 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
   onAuxCandle(tag: string, candle: Candle): void {
     if (tag === BTC_HIGH_RISK_AUX_TAG_4H) {
       this.pivot4h.update(candle);
+      this.last4hCandle = candle;
     }
   }
 
@@ -221,11 +250,28 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     const zoneWidth4h = this.pivot4h.zoneWidth;
     const validZone4h = zoneWidth4h !== null && zoneWidth4h.greaterThanOrEqualTo(this.minZoneWidth);
 
+    // ---- 4h candle wick-ratio filter (iteration 15) ----
+    // Winners' 4h candle at entry showed real rejection (a big wick
+    // relative to its range); losers' tended to be a "clean," mostly-body
+    // candle fighting the counter-trend Fib entry. validWick4h defaults to
+    // false (not true) when no 4h candle has arrived yet, matching "fail
+    // closed" for every other confirmation gate here.
+    let validWick4h = false;
+    if (this.last4hCandle) {
+      const o4h = toDecimalJs(this.last4hCandle.open);
+      const h4h = toDecimalJs(this.last4hCandle.high);
+      const l4h = toDecimalJs(this.last4hCandle.low);
+      const c4h = toDecimalJs(this.last4hCandle.close);
+      const range4h = h4h.minus(l4h);
+      const wick4hRatio = range4h.isZero() ? new Decimal(0) : new Decimal(1).minus(c4h.minus(o4h).abs().div(range4h));
+      validWick4h = wick4hRatio.greaterThanOrEqualTo(this.minWick4hRatio);
+    }
+
     const hourUTC = candle.openTime.getUTCHours();
     const inNightSession = hourUTC >= this.sessionStartHour || hourUTC <= this.sessionEndHour;
 
-    const isBullishConfirmed = isBullish && trend4h === 1 && validZone4h && inNightSession;
-    const isBearishConfirmed = isBearish && trend4h === -1 && validZone4h && inNightSession;
+    const isBullishConfirmed = isBullish && trend4h === 1 && validZone4h && inNightSession && validWick4h;
+    const isBearishConfirmed = isBearish && trend4h === -1 && validZone4h && inNightSession && validWick4h;
 
     const price = toDecimalJs(candle.close);
 

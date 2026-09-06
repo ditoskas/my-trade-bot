@@ -185,10 +185,12 @@ async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
     slug: BTC_HIGH_RISK_SLUG,
     name: "BTC High-Risk (BTCUSDT.P, paper)",
     description:
-      "Fibonacci pivot-retracement strategy, iteration 14 — see strategies/btc-high-risk.md for the full " +
+      "Fibonacci pivot-retracement strategy, iteration 15 — see strategies/btc-high-risk.md for the full " +
       "backtest history. 100x leverage, night-session-only (20:00-06:00 UTC), 50.0%/78.6% Fib levels only " +
-      "(38.2%/61.8% dropped — see Entry logic items 11-12), liquidation-tied (1/leverage) stop.",
-    version: 1,
+      "(38.2%/61.8% dropped), 4h candle wick-ratio entry filter (iteration 15) — see Entry logic items " +
+      "11-13. Liquidation-tied (1/leverage) stop. NOTE: the engine port's signal-parity gap against " +
+      "iteration 14 (see the Engine port section) is unresolved and predates this iteration's own filter.",
+    version: 2,
     lifecycleState: "paper",
     broker: "paper",
     marginMode: "ISOLATED",
@@ -198,9 +200,13 @@ async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
     riskLimits: {
       maxPositionSize: toDecimal128("1000"),
       maxConcurrentPositions: 1,
-      // Backtest's worst drawdown so far (iteration 14) was 27.92% — set a
-      // bit above that rather than exactly at it, so the breaker isn't
-      // tripped by ordinary variance on the very first rough patch.
+      // Iteration 14's Pine backtest drawdown was 27.92%; iteration 15
+      // (this port) improved that to 16.57% in Pine, but that number is
+      // unverified for the port itself given its unresolved parity gap —
+      // left at 35 (comfortably above either number) rather than
+      // tightening based on a Pine result this port isn't confirmed to
+      // reproduce, so the breaker isn't tripped by ordinary variance on
+      // the first rough patch.
       maxDrawdownPct: 35,
       maxLeverage: BTC_HIGH_RISK_LEVERAGE,
     },

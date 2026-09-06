@@ -8,10 +8,9 @@ history by a wide margin, nearly tripling iteration 14's total PnL while
 *improving* drawdown at the same time. A stricter threshold tested even
 higher (+$761.28, PF 2.051) but on a much smaller sample; kept the more
 conservative setting deliberately — see Backtest results and Next steps.
-The engine port described below (`apps/engine`'s `BtcHighRiskStrategy`)
-has **not yet been updated for this iteration** — it still reflects
-iteration 14's logic (no wick filter) until the port's own signal-parity
-gap is resolved; see "Engine port" below.
+The engine port described below (`apps/engine`'s `BtcHighRiskStrategy`) has
+since been updated for iteration 15's wick filter — see "Engine port"
+below. The port's own signal-parity gap remains unresolved.
 
 Iteration 14 dropped the 38.2% level (same treatment as 61.8%, same
 diagnostic method), reaching +$232.02 (+23.20%), PF 1.18, live-verified.
@@ -927,10 +926,13 @@ actually run in `apps/engine` rather than only backtest on TradingView.
 This is genuinely new capability, not just a doc update, so it's recorded
 here rather than as another Pine iteration.
 
-**Not yet updated for iteration 15's wick filter.** The port described
-below still reflects iteration 14's logic exactly — no 4h wick-ratio
-check. Given the port already has an unresolved signal-parity gap against
-iteration 14 (below), porting iteration 15 on top of that unresolved gap
+**Updated for iteration 15's wick filter.** `BtcHighRiskConfig` gained
+`minWick4hRatio` (default 0.5, matching the Pine input default) and
+`decide()` now computes the same 4h open/high/low/close wick-ratio check
+described in iteration 15 above, gating `isBullishConfirmed`/
+`isBearishConfirmed` exactly as the Pine script does. Ported after the
+gap below was already known and unresolved — deliberately not re-verified
+in isolation, since doing so on top of a still-open pivot-detector bug
 would only make the comparison harder to reason about; closing the
 existing gap comes first (see Next steps).
 
