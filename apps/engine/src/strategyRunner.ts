@@ -131,7 +131,7 @@ export class StrategyRunner {
       quantity: fromDecimalJs(this.openPosition?.quantity ?? new Decimal(0)),
     };
 
-    const { signal, riskFraction } = this.algorithm.decide(candle, positionState);
+    const { signal, riskFraction, forceReenter } = this.algorithm.decide(candle, positionState);
     if (signal === "HOLD") {
       return;
     }
@@ -151,16 +151,21 @@ export class StrategyRunner {
       // opposite side is currently open, that's a flip (exit, then re-enter
       // the other way), not just "open from flat." See
       // MovingAverageCrossStrategy's comment for why this matters: without
-      // it, one direction becomes structurally unreachable.
+      // it, one direction becomes structurally unreachable. forceReenter
+      // additionally closes-then-reopens when the SAME side is already
+      // open — see StrategyDecision.forceReenter's doc comment for why an
+      // algorithm needs that (btc-high-risk's same-bar stop-then-reenter).
       if (signal === "ENTER_LONG") {
-        if (positionState.isOpen && positionState.side === "SHORT") {
+        const alreadyLong = positionState.isOpen && positionState.side === "LONG";
+        if ((positionState.isOpen && positionState.side === "SHORT") || (alreadyLong && forceReenter)) {
           await this.exitPosition(candle);
         }
         if (!this.openPosition) {
           await this.enterPosition("LONG", candle, riskFraction);
         }
       } else if (signal === "ENTER_SHORT") {
-        if (positionState.isOpen && positionState.side === "LONG") {
+        const alreadyShort = positionState.isOpen && positionState.side === "SHORT";
+        if ((positionState.isOpen && positionState.side === "LONG") || (alreadyShort && forceReenter)) {
           await this.exitPosition(candle);
         }
         if (!this.openPosition) {

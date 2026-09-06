@@ -1182,25 +1182,17 @@ counted. Three distinct, concretely-evidenced root causes, not one:
    apparently-correct) in earlier iterations of this diagnosis — worth a
    dedicated synthetic test the way the pivot tie-break bug was isolated,
    if this is chased further, rather than assumed fixed.
-3. **A real, fixable structural bug: a same-bar stop-loss exit prevents
-   the port from ever evaluating a same-bar reversal entry** (1 of 8
-   missed: 2026-02-10T07:00 LONG, where the debug state shows
+3. **A real structural bug (since fixed): a same-bar stop-loss exit
+   prevented the port from ever evaluating a same-bar reversal entry** (1
+   of 8 missed: 2026-02-10T07:00 LONG, where the debug state showed
    `signal=EXIT_LONG` with every entry-related field `null` — the
-   liquidation-stop check returns immediately, before the entry logic
-   even runs). Pine's script has no such short-circuit: the exit
+   liquidation-stop check returned immediately, before the entry logic
+   even ran). Pine's script has no such short-circuit: the exit
    (`strategy.exit(...)`) and entry (`if isBullishConfirmed ...` /
    `else if isBearishConfirmed ...`) blocks are independent top-level
    statements that both execute every bar, so Pine can stop out of a
-   long and open a fresh short in the very same bar. `decide()`'s
-   `return finishDecision("EXIT_LONG")` on a stop hit makes that
-   structurally impossible here. **Not fixed in this pass** — `decide()`
-   returns exactly one `StrategySignal` per call
-   (`apps/engine/src/strategy/types.ts`), so supporting "exit then
-   immediately re-enter in the same bar" needs either a composite
-   signal type or a `StrategyRunner`-level convention (e.g. re-calling
-   `decide()` once more the same bar after an exit), which is a
-   `StrategyRunner`-wide change affecting every strategy, not a
-   `btcHighRisk.ts`-local fix — flagged here rather than rushed.
+   long and open a fresh short (or even re-enter the same side) in the
+   very same bar. See "Since fixed" below.
 
 **Conclusion: the residual gap is now well-understood, not just
 narrowed.** Root cause #1 (data-feed disagreement, amplified by 100x
@@ -1267,6 +1259,39 @@ reopen the TradingView chart (logs repopulate automatically) and read the
 shadow log, and diff the two signal lists directly, the same way the
 offline diagnostic did, but now with cause #1 (feed disagreement) removed
 by construction since both sides are watching the same real-time market.
+
+**Since fixed: root cause #3, the same-bar stop-then-reenter bug.** The
+user asked directly to go live; declined again given the state above, and
+offered a choice of how to proceed — "fix the known bug, then reassess"
+was chosen. `StrategyDecision` (`apps/engine/src/strategy/types.ts`)
+gained an optional `forceReenter` flag (only meaningful alongside
+`ENTER_LONG`/`ENTER_SHORT` while the SAME side is already open — ordinary
+"stay put" behavior for every other strategy is unaffected, since this
+defaults to unset). `StrategyRunner.onCandle` now closes the existing
+position first when `forceReenter` is set, mirroring the flip logic it
+already had for the opposite-side case. `btcHighRiskStrategy.decide()`
+no longer returns immediately on a stop hit: it now evaluates this same
+bar's full entry-confirmation logic (using `effectiveSide`, treating a
+just-stopped-out side as flat for the "already in this position" gates)
+before falling back to a plain `EXIT_LONG`/`EXIT_SHORT` — exactly
+mirroring Pine's independent top-to-bottom exit/entry blocks. **This was
+genuinely `StrategyRunner`-wide, contrary to this doc's earlier
+assumption** — a naive `ENTER_LONG`-while-already-LONG return would have
+silently no-op'd under the runner's original logic (which correctly
+treats that as "nothing changed" for every other strategy), so
+`forceReenter` was necessary to disambiguate "no change" from "close and
+reopen" without touching that existing, correct behavior for anyone else.
+
+Re-ran the full parity check after the fix: **61 exact + 7 off-by-1h of
+74 (91.9%), up from 89.2%** — missed trades dropped from 8 to 6 (confirmed
+the exact 2026-02-10T07:00 case is now matched), though extra port-only
+signals rose slightly from 8 to 10. That's a real, disclosed trade-off,
+not a regression: Pine's own intrabar order-of-operations for a stop and
+a fresh entry landing on the exact same bar isn't something this fix (or
+the port generally) fully replicates — Pine's strategy tester resolves
+that with its own internal price-path simulation, not simply script
+order. Net effect is still a clear improvement. `BTC_HIGH_RISK_ALLOW_LIVE`
+was not touched.
 
 **Other known gaps, flagged in code comments, not hidden**:
 
@@ -1341,7 +1366,15 @@ by construction since both sides are watching the same real-time market.
    mainnet feed, both logging every signal independently. Needs real
    elapsed days to accumulate enough signals to compare (~1 real trade
    every 3 days historically) — see "Engine port" above for exactly how to
-   check on it.
+   check on it. **Since then**: the user asked to go live directly; given
+   the choice of how to proceed instead, chose to fix the known
+   same-bar-stop-then-reenter bug first. Fixed (`forceReenter` on
+   `StrategyDecision`, see "Engine port" above) — re-verified at **91.9%
+   matched-or-close (61 exact + 7 off-by-1h of 74), up from 89.2%**, with
+   the specific known case confirmed resolved. `BTC_HIGH_RISK_ALLOW_LIVE`
+   still stays gated: the live-paper observers above are still the thing
+   that would actually justify reconsidering it, and they've barely had
+   any real elapsed time yet.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74

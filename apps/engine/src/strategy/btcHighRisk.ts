@@ -208,6 +208,17 @@ export const BTC_HIGH_RISK_AUX_TAG_4H = "240";
 //    still isn't a verified byte-for-byte match — a fresh trade-list parity
 //    re-check against the TradingView backtest is still owed before
 //    trusting exact parity.
+// 4. decide() now supports a same-bar stop-then-reenter (see the
+//    stoppedOutSide/effectiveSide/forceReenter logic below — fixed a real,
+//    confirmed divergence from Pine's independent exit/entry blocks), but
+//    it still doesn't model Pine's own intrabar order-of-operations for a
+//    stop and a fresh entry landing on the exact same bar — Pine's
+//    strategy tester resolves that with its own internal price-path
+//    simulation, not simply "whichever block appears first in the
+//    script." A parity re-check after this fix showed both fewer missed
+//    trades AND slightly more extra (port-only) signals than before,
+//    consistent with this being a real improvement with one remaining,
+//    smaller, disclosed rough edge rather than a fully solved edge case.
 export class BtcHighRiskStrategy implements StrategyAlgorithm {
   readonly slug = "btc-high-risk";
   readonly symbol: string;
@@ -294,9 +305,16 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       isBearishConfirmed: null,
       fibBandTouched: null,
     };
-    const finishDecision = (signal: string, riskFraction?: number): StrategyDecision => {
+    const finishDecision = (signal: string, riskFraction?: number, forceReenter?: boolean): StrategyDecision => {
       this.lastDebugState = { ...debug, signal } as BtcHighRiskDebugState;
-      return riskFraction === undefined ? { signal: signal as StrategyDecision["signal"] } : { signal: signal as StrategyDecision["signal"], riskFraction };
+      const decision: StrategyDecision = { signal: signal as StrategyDecision["signal"] };
+      if (riskFraction !== undefined) {
+        decision.riskFraction = riskFraction;
+      }
+      if (forceReenter) {
+        decision.forceReenter = true;
+      }
+      return decision;
     };
 
     if (!position.isOpen) {
@@ -314,21 +332,36 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     debug.direction1h = this.pivot1h.direction;
 
     // ---- Liquidation-tied stop — see the KNOWN GAPS note above. ----
+    // Deliberately does NOT return immediately on a hit. Pine's exit
+    // (strategy.exit) and entry (if isBullishConfirmed ... else if
+    // isBearishConfirmed ...) blocks are independent top-level statements
+    // that both evaluate every bar, so Pine can stop out of one side and
+    // open the other (or even the same side again) in the same bar. A
+    // real, confirmed divergence from that (one of 8 residual mismatches
+    // out of 74 real trades in the last parity check, see "Engine port" in
+    // strategies/btc-high-risk.md) was this decide() returning immediately
+    // here instead. stoppedOutSide records what just closed so the entry
+    // logic below can evaluate this same bar "as if flat"; effectiveSide
+    // feeds the existing "already in this position" gates further down.
+    let stoppedOutSide: "LONG" | "SHORT" | null = null;
     if (position.isOpen && this.stopPrice !== null) {
       const low = toDecimalJs(candle.low);
       const high = toDecimalJs(candle.high);
       if (position.side === "LONG" && low.lessThanOrEqualTo(this.stopPrice)) {
         this.stopPrice = null;
-        return finishDecision("EXIT_LONG");
-      }
-      if (position.side === "SHORT" && high.greaterThanOrEqualTo(this.stopPrice)) {
+        stoppedOutSide = "LONG";
+      } else if (position.side === "SHORT" && high.greaterThanOrEqualTo(this.stopPrice)) {
         this.stopPrice = null;
-        return finishDecision("EXIT_SHORT");
+        stoppedOutSide = "SHORT";
       }
     }
+    const effectiveSide = stoppedOutSide !== null ? null : position.side;
+    // Only reached if nothing below fires a fresh entry this same bar.
+    const exitOnlyDecision = (): StrategyDecision =>
+      stoppedOutSide !== null ? finishDecision(`EXIT_${stoppedOutSide}`) : finishDecision("HOLD");
 
     if (!this.pivot1h.hasSwing) {
-      return finishDecision("HOLD");
+      return exitOnlyDecision();
     }
 
     const high1h = this.pivot1h.lastHigh as Decimal;
@@ -339,14 +372,14 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     debug.swingPct = swingPct.toNumber();
     debug.validSwing = validSwing;
     if (!validSwing) {
-      return finishDecision("HOLD");
+      return exitOnlyDecision();
     }
 
     const direction = this.pivot1h.direction;
     const isBullish = direction === 1;
     const isBearish = direction === -1;
     if (!isBullish && !isBearish) {
-      return finishDecision("HOLD");
+      return exitOnlyDecision();
     }
 
     const fib = (pct: number): Decimal => (isBullish ? high1h.minus(diff.mul(pct)) : low1h.plus(diff.mul(pct)));
@@ -401,7 +434,7 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     // were the only levels with a profit factor below 1, on two different
     // trade samples. See strategies/btc-high-risk.md Entry logic items
     // 11-12. Only 50.0% and 78.6% remain tradeable.
-    if (isBullishConfirmed && position.side !== "LONG") {
+    if (isBullishConfirmed && effectiveSide !== "LONG") {
       const low = toDecimalJs(candle.low);
       let riskFraction: number | null = null;
       if (low.lessThanOrEqualTo(fib786)) {
@@ -421,9 +454,9 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       }
       if (riskFraction !== null) {
         this.stopPrice = price.mul(new Decimal(1).minus(this.liqLossFrac));
-        return finishDecision("ENTER_LONG", riskFraction);
+        return finishDecision("ENTER_LONG", riskFraction, stoppedOutSide === "LONG");
       }
-    } else if (isBearishConfirmed && position.side !== "SHORT") {
+    } else if (isBearishConfirmed && effectiveSide !== "SHORT") {
       const high = toDecimalJs(candle.high);
       let riskFraction: number | null = null;
       if (high.greaterThanOrEqualTo(fib786)) {
@@ -443,10 +476,10 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       }
       if (riskFraction !== null) {
         this.stopPrice = price.mul(new Decimal(1).plus(this.liqLossFrac));
-        return finishDecision("ENTER_SHORT", riskFraction);
+        return finishDecision("ENTER_SHORT", riskFraction, stoppedOutSide === "SHORT");
       }
     }
 
-    return finishDecision("HOLD");
+    return exitOnlyDecision();
   }
 }

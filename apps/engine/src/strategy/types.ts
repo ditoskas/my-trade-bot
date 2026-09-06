@@ -21,6 +21,22 @@ export interface StrategyPositionState {
 export interface StrategyDecision {
   signal: StrategySignal;
   riskFraction?: number;
+  // Only meaningful alongside ENTER_LONG/ENTER_SHORT when a position is
+  // already open on that SAME side. Ordinarily StrategyRunner treats that
+  // as "stay put, nothing to do" (the common case: an algorithm's entry
+  // condition often stays true every bar while already in the position it
+  // describes, and re-placing an order each time would just churn fees).
+  // Set this true to force an explicit close-then-reopen instead — needed
+  // when an algorithm's OWN exit fired earlier in this same decide() call
+  // (e.g. a stop-loss) and it then wants to re-enter in that same
+  // direction on the very same bar, which a bare ENTER_LONG/ENTER_SHORT
+  // can't distinguish from "no change" once StrategyRunner's own
+  // bookkeeping still shows a position open. See btc-high-risk.ts's
+  // decide() for the motivating case (Pine's independent exit/entry blocks
+  // both evaluate every bar; a single decide() call returning one signal
+  // couldn't express that without this). Undefined/false preserves every
+  // existing strategy's behavior unchanged.
+  forceReenter?: boolean;
 }
 
 // Deliberately named StrategyAlgorithm, not Strategy — @trade-bot/shared's
