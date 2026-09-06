@@ -50,7 +50,14 @@ engine_control_api_port: 4001     # never exposed outside 127.0.0.1 — nginx on
 # ---- MongoDB / Redis ----
 # Installed as native system services on this same server (no containers),
 # each bound to 127.0.0.1 only — never reachable from outside the box.
-mongodb_version: "7.0"            # matches docker-compose.yml's mongo:7.0, for local/prod parity
+# 8.0, not docker-compose.yml's mongo:7.0 -- MongoDB's official apt repo
+# has no packages at all for Ubuntu 24.04 "noble" under 7.0 (confirmed
+# live: repo.mongodb.org's dists/noble/mongodb-org/7.0/ 404s; 8.0 is the
+# first version with real noble packages). A one-version skew from local
+# dev's Docker image is a reasonable tradeoff here -- if your server runs
+# an older Ubuntu (22.04 "jammy" or earlier), "7.0" works fine there and
+# matches local dev exactly; check yours with `lsb_release -c`.
+mongodb_version: "8.0"
 mongodb_uri: "mongodb://localhost:27017/trade-bot-dev"
 redis_url: "redis://localhost:6379"
 
