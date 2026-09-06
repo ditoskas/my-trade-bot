@@ -108,16 +108,33 @@
         state: directory
         mode: "0755"
 
+    # Hit live: the destination used to be a fixed /tmp/mongodb-server.asc
+    # regardless of version. get_url's default idempotency (force: no)
+    # only re-downloads when the *server's* Last-Modified header is newer
+    # than the *existing local file's* mtime -- it has no idea the URL
+    # itself changed. Result: switching mongodb_version from 7.0 to 8.0
+    # between runs silently kept the old 7.0 key's content in place (same
+    # destination path, and 8.0's key wasn't newer), which then got
+    # dearmored into a file *named* mongodb-server-8.0.gpg but containing
+    # the 7.0 key -- apt correctly rejected the repo as unsigned by the
+    # key it actually expected. Destination is now version-specific so
+    # different versions can never collide, plus force: true so a content
+    # change on MongoDB's end is never missed either.
     - name: Download MongoDB's GPG key
       ansible.builtin.get_url:
         url: "https://pgp.mongodb.com/server-{{ mongodb_version }}.asc"
-        dest: /tmp/mongodb-server.asc
+        dest: "/tmp/mongodb-server-{{ mongodb_version }}.asc"
         mode: "0644"
+        force: true
 
+    # No `creates:` guard -- always re-dearmor from the (now guaranteed
+    # fresh) source above. gpg --dearmor is cheap and deterministic, and
+    # skipping it whenever the destination already existed is exactly what
+    # let the stale-key file above go undetected.
     - name: Dearmor MongoDB's GPG key into the apt keyrings directory
       ansible.builtin.command:
-        cmd: "gpg --yes --dearmor -o /etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg /tmp/mongodb-server.asc"
-        creates: "/etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg"
+        cmd: "gpg --yes --dearmor -o /etc/apt/keyrings/mongodb-server-{{ mongodb_version }}.gpg /tmp/mongodb-server-{{ mongodb_version }}.asc"
+      changed_when: true
 
     - name: Add the MongoDB apt repository
       ansible.builtin.apt_repository:
