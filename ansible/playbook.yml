@@ -25,6 +25,20 @@
     # ---------------------------------------------------------------
     # Base packages
     # ---------------------------------------------------------------
+    # Plain `apt-get update`, not the apt module's own update_cache: true —
+    # found live on a server that also runs GitLab CE: its apt repo's
+    # signing key had expired, which apt-get update itself only warns
+    # about (exit 0, falls back to the last-known-good index), but the apt
+    # module treats as a hard failure ("Failed to update apt cache: unknown
+    # reason"). This tolerates a broken *unrelated* third-party repo
+    # instead of requiring it be fixed before this playbook can run at
+    # all. If this repo, or another one, is missing/broken and that
+    # actually matters for a package this playbook installs, the specific
+    # `apt:` task below will fail on its own with a clearer error.
+    - name: Update apt cache (tolerant of unrelated broken third-party repos)
+      ansible.builtin.command: apt-get update
+      changed_when: true
+
     - name: Ensure base apt packages are present
       ansible.builtin.apt:
         name:
@@ -34,7 +48,6 @@
           - curl
           - gnupg
         state: present
-        update_cache: true
 
     - name: Ensure certbot is present (only needed when HTTPS is enabled)
       ansible.builtin.apt:
@@ -68,12 +81,21 @@
       when: >
         node_version_check.rc != 0 or
         (node_version + '.') not in (node_version_check.stdout | default('') | regex_replace('^v', ''))
+      register: nodesource_setup
+
+    # The NodeSource script itself runs apt-get update internally, but
+    # re-run it explicitly (same tolerant command, not the apt module's
+    # update_cache) in case that script's own run hit the same broken-
+    # third-party-repo situation and silently swallowed it.
+    - name: Refresh apt cache after adding the NodeSource repo
+      ansible.builtin.command: apt-get update
+      changed_when: true
+      when: nodesource_setup is changed
 
     - name: Install Node.js
       ansible.builtin.apt:
         name: nodejs
         state: present
-        update_cache: true
 
     # ---------------------------------------------------------------
     # MongoDB (native package, not a container) — bound to localhost
@@ -104,7 +126,12 @@
           {{ ansible_distribution_release }}/mongodb-org/{{ mongodb_version }} multiverse
         filename: "mongodb-org-{{ mongodb_version }}"
         state: present
-        update_cache: true
+      register: mongodb_repo
+
+    - name: Refresh apt cache after adding the MongoDB repo
+      ansible.builtin.command: apt-get update
+      changed_when: true
+      when: mongodb_repo is changed
 
     - name: Install MongoDB
       ansible.builtin.apt:
