@@ -1432,10 +1432,21 @@ was not touched.
    (PF 0.896, in line with the rest of the excluded day session). DeepSeek's
    claim was only half right: London open, not both opens. 18 trades is
    too small to act on by itself (same caution already applied to the 0.6
-   wick-ratio threshold) — the concrete next step, not done here, is
-   testing `inNightSess = (hour >= 20 or hour <= 6) or (hour >= 8 and
-   hour <= 10)` as an *addition* to the current session filter and
-   live-verifying it on its own before adopting.
+   wick-ratio threshold). **Since then**: live-verified adding London-open
+   as an *addition* to the current session filter
+   (`inNightSess = (hour >= 20 or hour <= 6) or (hour >= 8 and hour <=
+   10)`), on a copy of the canonical script, not the live one. **Result:
+   worse on every metric, not better** — +$422.03 (down from +$617.22),
+   PF 1.31 (down from 1.602), max drawdown 28.49% (up from 16.57%), 69
+   trades (up from 56). The isolated 18-trade London-open backtest doesn't
+   transfer when actually combined: since the strategy holds one position
+   at a time and rides to reversal rather than a fixed exit, adding a new
+   entry window changes *which* trades the existing night-session logic
+   ends up taking, not just adds independent trades on top of it — a real,
+   general lesson (isolated-window backtests on a single-position,
+   reversal-exit strategy are not additive) worth remembering before
+   trusting any other per-window result the same way. **Rejected. The
+   session filter stays night-session-only.**
    **Also since then**: the canonical "BTC High-Risk" Pine script itself
    (the one carrying the live-shadow `log.info()` lines from the
    live-paper setup above) was found missing from this TradingView
