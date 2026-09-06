@@ -1,11 +1,12 @@
 # Liquidity Sweep Scalper
 
-**Status:** draft — untested. Sourced from a ChatGPT-generated Pine v6 script
-(https://chatgpt.com/share/6a9d1879-9690-83eb-a60a-7585f11a4933, "v2"), not a
-strategy anyone has run a live backtest on yet. Documented here as a summary
-of that final result, not the back-and-forth that produced it. Two real Pine
-compile issues in the source were found and fixed before this could actually
-run — see Backtest notes.
+**Status:** draft — compiled and ran cleanly on TradingView after the two
+fixes below, but only over a ~1-week window (4 trades) due to a real
+plan limitation, nowhere near enough to trust — see Backtest notes.
+Sourced from a ChatGPT-generated Pine v6 script
+(https://chatgpt.com/share/6a9d1879-9690-83eb-a60a-7585f11a4933, "v2").
+Documented here as a summary of that final result, not the back-and-forth
+that produced it.
 
 ## Overview
 
@@ -543,9 +544,29 @@ alertcondition(sweepShort, title = "BTC SHORT SWEEP", message = "BTCUSDT.P beari
 
 ## Backtest notes
 
-- **Not yet run.** Nobody has put this through TradingView's Strategy
-  Tester — treat every number in "Targets" above as the source
-  conversation's own aspiration, not a verified result.
+- **Run once, live, over a real but very short window — not remotely
+  enough to trust yet.** Pasted into TradingView, compiled clean on the
+  first try after the two fixes below, and ran on the real 1-minute
+  BTCUSDT.P chart. Result over the only window actually available
+  (2026-08-31 to 2026-09-06, ~1 week): **4 trades, 50% win rate, profit
+  factor 1.678, +$2.35 (+0.24%), max drawdown $6.78 (0.67%).** Treat this
+  as "it runs and produces plausible-looking numbers," not as evidence of
+  an edge — the source conversation's own stated bar is 500+ trades across
+  multiple distinct periods, and this is 4 trades across one.
+- **Real plan limitation hit, not a script problem**: this account's
+  TradingView plan (Basic) only allows the Strategy Tester to calculate
+  over whatever 1-minute history is already loaded on the chart — for
+  this symbol that's about one week. Extending further ("Entire history"
+  / arbitrary custom date range) is gated behind a "Deep Backtesting"
+  upsell to Premium. Scrolling/zooming the chart didn't lazy-load older
+  1m bars the way it does for 1h — this is a genuine plan floor, not
+  something worth spending more time working around from the UI side. Two
+  real ways forward if more history is wanted: upgrade to Premium for Deep
+  Backtesting, or fetch real 1m/5m/15m history directly from Binance's
+  public API (same approach `apps/engine`'s parity-diagnostic scripts
+  already use for `btc-high-risk`) and reimplement this strategy's logic
+  in TypeScript to backtest independently of TradingView's plan limits —
+  neither attempted here.
 - Two real Pine v6 compile issues found in the source and fixed above,
   before this was usable at all:
   1. `strategy(...)` never set `margin_long`/`margin_short`, which default
