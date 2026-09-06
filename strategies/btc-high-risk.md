@@ -894,14 +894,33 @@ look like zero or near-zero matches, not this) — but this is not
 parity, and shipping a signal generator with a known, unexplained ~50%
 miss rate to real capital would be irresponsible.
 
-Leading hypothesis, not yet confirmed: the smoke test's warm-up window
-(~41-50 days) is far shorter than the Pine backtest's (the full Jan-Sep
-2026 range), so the two could genuinely be anchored to a different
-"current" 1h/4h swing pivot right now — different anchor means different
-Fib levels means different trigger points, without either implementation
-being wrong per se. Re-running the same check with a warm-up matching
-Pine's full history is the concrete next step to confirm or rule this out
-before trusting the port further.
+**Follow-up: re-ran the same check with a full-history warm-up.** Fetched
+11,095 real 1h futures candles (from 2025-06-01) and 3,680 real 4h candles
+(from 2025-01-01, well before the earliest real trade on 2026-01-12) —
+matching, rather than truncating, the lead time Pine's own indicators had
+before the backtest's visible date range starts. Result against all 94
+real closed Pine trades: **45 exact matches, 15 more matching direction
+within one hour, 34 missed entirely, and 0 direction mismatches whenever
+the port fired near a real trade's time** — a match rate of 63.8%, up from
+the ~41-day test's ~50%. The warm-up-length hypothesis was **partially
+right**: a longer warm-up did meaningfully help. But a real, still-large
+gap remains — 34 real trades the port never fires at all, and the port
+also produced 148 total entries against 94 real ones, meaning a
+substantial number of *extra* signals with no corresponding real trade.
+Zero direction mismatches at matched times is a genuinely good sign (the
+core Fib-level-to-direction mapping is not inverted or otherwise broken),
+but this is still far from parity, and the extra-signal count in
+particular points at something more specific than warm-up length — most
+likely the pivot detector itself resolving a tie or near-tie differently
+than Pine's `ta.pivothigh`/`ta.pivotlow` in some real, recurring set of
+cases, compounding over an 8-month history into a meaningfully different
+sequence of "current" swings. **Conclusion unchanged: not safe for real
+capital.** The next concrete step is comparing the two pivot detectors
+bar-by-bar on a shared slice of real data (log both the Pine and the
+TypeScript port's `lastPivotHigh`/`lastPivotHighBar`/`lastPivotLow`/
+`lastPivotLowBar` for the same real window and diff them directly) rather
+than only comparing final trade outcomes, which conflates many small
+per-bar disagreements into one hard-to-diagnose aggregate number.
 
 **Other known gaps, flagged in code comments, not hidden**:
 
@@ -926,11 +945,18 @@ before trusting the port further.
 
 0. **Close the engine port's signal-parity gap** (see Engine port above)
    before this touches even futures testnet execution in earnest, let
-   alone a real account: re-run `btcHighRiskSmokeTest.ts` with a warm-up
-   window matching the Pine backtest's full Jan-Sep 2026 history instead
-   of ~41-50 days, and see if that closes the gap (3/8 exact matches, 1
-   off-by-an-hour, 4 missed). If it doesn't, the pivot detector itself
-   needs closer comparison against Pine's `ta.pivothigh`/`ta.pivotlow`.
+   alone a real account. Already re-tested with a full-history warm-up
+   (11,095 real 1h + 3,680 real 4h candles from well before the backtest's
+   start) — improved the match rate from ~50% to 63.8% (45 exact + 15
+   off-by-1h out of 94 real trades, 0 direction mismatches when matched),
+   confirming warm-up length was part of the problem but not all of it: 34
+   real trades still missed entirely, plus 88 extra port-only signals with
+   no matching real trade. Next concrete step: log both implementations'
+   `lastPivotHigh`/`lastPivotHighBar`/`lastPivotLow`/`lastPivotLowBar` bar-
+   by-bar over the same real window and diff them directly, rather than
+   only comparing final trade outcomes — that will show exactly where and
+   why the two pivot detectors diverge instead of leaving it as one
+   aggregate mismatch number.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — a ~$232 edge over 74 trades on one window is real progress, not
    proof. This is the single most important unfinished check, more so now
