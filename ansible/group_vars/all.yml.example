@@ -12,9 +12,10 @@
 server_host: "CHANGE ME"          # e.g. 203.0.113.10, or a hostname
 ssh_username: "CHANGE ME"         # e.g. root, or a sudo-capable user
 ssh_port: 22
-# Path to the private key Ansible should use (e.g. "~/.ssh/id_ed25519").
-# Leave as "" to fall back to your default SSH agent/key instead.
-ssh_private_key_file: ""
+# SSH key selection isn't a variable here on purpose — see inventory.yml's
+# comment on why. Use your SSH agent (`ssh-add /path/to/key`), an
+# `IdentityFile` entry in `~/.ssh/config` for this host, or pass
+# `--private-key=/path/to/key` on the ansible-playbook command line.
 
 # ---- Domain / nginx ----
 domain_name: "trade.toskas.gr"

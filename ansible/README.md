@@ -65,11 +65,22 @@ this first deployment — the engine runs correctly with none of it set.
 
 ### SSH access
 
-Leave `ssh_private_key_file: ""` to use your default SSH agent/key. If you
-need a specific key, set its path there. If the server has never seen your
-key before, add it the normal way (`ssh-copy-id`, or your provider's
-cloud-init/dashboard) — this playbook doesn't provision your own access to
-the box, only what happens once Ansible is already able to log in.
+There's no `ssh_private_key_file` variable — Ansible's "omit this argument
+if unset" mechanism doesn't work for connection variables like
+`ansible_ssh_private_key_file` (only for a module's own arguments), so an
+earlier version of this that tried to make it conditional in
+`inventory.yml` ended up passing a literal placeholder string as the key
+path, and SSH failed with "no such identity." Pick one instead:
+
+- Use your default SSH agent/key (`ssh-add ~/.ssh/id_ed25519` etc.) — no
+  configuration needed here.
+- Add an `IdentityFile` entry for this host in `~/.ssh/config`.
+- Pass it on the command line: `ansible-playbook -i inventory.yml playbook.yml --private-key=/path/to/key`.
+
+If the server has never seen your key before, add it the normal way
+(`ssh-copy-id`, or your provider's cloud-init/dashboard) — this playbook
+doesn't provision your own access to the box, only what happens once
+Ansible is already able to log in.
 
 If you truly must authenticate with an SSH **password** (not recommended —
 this is separate from the web dashboard's password, which the playbook

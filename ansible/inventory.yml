@@ -1,6 +1,16 @@
-# Symbolic host name only — the actual server address, SSH user, port, and
-# key all live in group_vars/all.yml (see all.yml.example) so everything
-# you need to fill in is in one place, not split across two files.
+# Symbolic host name only — the actual server address, SSH user, and port
+# live in group_vars/all.yml (see all.yml.example) so most of what you need
+# to fill in is in one place, not split across two files.
+#
+# SSH key selection is deliberately NOT done here — Ansible's "omit this
+# argument if unset" mechanism (the `omit` sentinel) only works for a
+# module's own arguments, not for connection variables like
+# ansible_ssh_private_key_file read directly by the SSH connection plugin,
+# so a templated attempt to make this conditional ends up passing the
+# literal placeholder string as a real file path (ssh then fails with
+# "no such identity"). Use your SSH agent (`ssh-add /path/to/key`) or an
+# `IdentityFile` entry in `~/.ssh/config` for this host instead, or pass
+# `--private-key=/path/to/key` on the ansible-playbook command line.
 all:
   children:
     trade_bot:
@@ -9,4 +19,3 @@ all:
           ansible_host: "{{ server_host }}"
           ansible_user: "{{ ssh_username }}"
           ansible_port: "{{ ssh_port }}"
-          ansible_ssh_private_key_file: "{{ (ssh_private_key_file | default('')) or omit }}"
