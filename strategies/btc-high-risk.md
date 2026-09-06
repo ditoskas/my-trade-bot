@@ -1393,7 +1393,25 @@ was not touched.
    update (see `ansible/README.md` or ask the operator for the exact
    `mongosh` command used). The live-paper observers keep running and
    accumulating regardless — they're now validating a strategy that's
-   actually live, which is more informative, not less.
+   actually live, which is more informative, not less. **Since then**:
+   enabling actually failed live, twice, on real Binance errors —
+   `-4067` ("Position side cannot be changed if there exists open
+   orders," resolved by clearing a leftover open order/position on the
+   real account) then `-4175` ("Cannot change to ISOLATED mode due to
+   credit status" — Multi-Assets Mode's auto-borrow, incompatible with
+   Isolated margin). Rather than resolve the Multi-Assets/credit state on
+   Binance's side, the user chose to **switch the strategy from Isolated
+   to Crossed margin** (`marginMode` in the Strategy doc,
+   `configureSymbol(...)`'s call in `index.ts`, both changed to
+   `"CROSSED"`). Real consequence, documented in `index.ts`'s own comment
+   at that call site: this strategy's liquidation-tied stop
+   (`liqLossFrac = 1/leverage`) is a **self-imposed software exit**, not
+   something Binance enforces — under Isolated margin, a missed exit is
+   capped to that position's own reserved margin; under Crossed, Binance
+   can draw on the entire futures wallet balance first. Accepted
+   deliberately on a $150 account. The sizing math itself
+   (`StrategyRunner.enterPosition`'s margin/notional/quantity
+   calculation) doesn't depend on margin mode and needed no changes.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74

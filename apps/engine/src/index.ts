@@ -193,7 +193,9 @@ async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
     version: 2,
     lifecycleState: "paper",
     broker: "paper",
-    marginMode: "ISOLATED",
+    // CROSSED, not ISOLATED — see the CROSSED-margin note down in
+    // startBtcHighRiskRuntime's configureSymbol call for why.
+    marginMode: "CROSSED",
     symbols: [BTC_HIGH_RISK_SYMBOL],
     // 150, not the demo strategies' 1000 default — matches the real
     // account balance actually funded for this strategy (see
@@ -272,10 +274,27 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
 
   if (broker instanceof BinanceFuturesBroker) {
     await broker.configureOneWayPositionMode();
-    await broker.configureSymbol(BTC_HIGH_RISK_SYMBOL, BTC_HIGH_RISK_LEVERAGE, "ISOLATED");
+    // CROSSED, not ISOLATED (which is what this strategy was actually
+    // designed and backtested around — see strategies/btc-high-risk.md's
+    // "Going live" note). Switched because the real account this was
+    // first deployed against has Multi-Assets Mode enabled, which Binance
+    // does not allow combining with Isolated margin (-4175 "Cannot change
+    // to ISOLATED mode due to credit status" — an active Multi-Assets
+    // auto-borrow, not a bug here), and the user chose to switch margin
+    // mode rather than resolve that on Binance's side. Real consequence,
+    // not just a config toggle: this strategy's stop-loss
+    // (BtcHighRiskStrategy's liqLossFrac, `1/leverage`) is a **self-imposed
+    // software exit**, not something Binance enforces — under Isolated
+    // margin a bug or missed exit is capped to that position's own
+    // reserved margin; under Crossed, Binance can draw on the ENTIRE
+    // futures wallet balance to cover a losing position before its own
+    // liquidation engine steps in, so the real worst case is larger than
+    // the strategy's own risk math assumes. Accepted deliberately, on a
+    // small ($150) account.
+    await broker.configureSymbol(BTC_HIGH_RISK_SYMBOL, BTC_HIGH_RISK_LEVERAGE, "CROSSED");
     console.log(
       `[engine] "${doc.slug}" configured on Binance futures ${effectiveUseTestnet ? "TESTNET" : "REAL ACCOUNT"} ` +
-        `(one-way mode, ISOLATED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
+        `(one-way mode, CROSSED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
     );
   }
 
