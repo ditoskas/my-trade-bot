@@ -104,6 +104,40 @@ class PivotSwingTracker {
   }
 }
 
+// Full per-bar decision trace, populated on every decide() call (not gated
+// behind a debug flag — cheap to compute, and this is exactly the
+// "compare full decision state between Pine and the port" data the
+// parity-diagnostic work in strategies/btc-high-risk.md's "Engine port"
+// section calls for; see scripts/btcHighRiskParityDiagnostic.ts. Read-only
+// snapshot of the last decide() call's internals, not part of
+// StrategyDecision itself so normal callers (StrategyRunner) are
+// unaffected.
+export interface BtcHighRiskDebugState {
+  barTimeIso: string;
+  hasSwing: boolean;
+  lastHigh1h: string | null;
+  lastLow1h: string | null;
+  lastHighBar1h: number | null;
+  lastLowBar1h: number | null;
+  direction1h: 1 | -1 | 0;
+  validSwing: boolean | null;
+  swingPct: number | null;
+  fib382: string | null;
+  fib500: string | null;
+  fib618: string | null;
+  fib786: string | null;
+  trend4h: 1 | -1 | 0;
+  zoneWidth4h: string | null;
+  validZone4h: boolean | null;
+  wick4hRatio: string | null;
+  validWick4h: boolean;
+  inNightSession: boolean | null;
+  isBullishConfirmed: boolean | null;
+  isBearishConfirmed: boolean | null;
+  fibBandTouched: "382" | "500" | "618" | "786" | "none" | null;
+  signal: string;
+}
+
 export interface BtcHighRiskConfig {
   symbol?: string;
   leverage?: number;
@@ -204,6 +238,9 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
   // never really opened.
   private stopPrice: Decimal | null = null;
 
+  // See BtcHighRiskDebugState — always populated after decide() returns.
+  lastDebugState: BtcHighRiskDebugState | null = null;
+
   constructor(config: BtcHighRiskConfig = {}) {
     this.symbol = config.symbol ?? "BTCUSDT";
     this.leverage = config.leverage ?? 100;
@@ -229,6 +266,39 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
   }
 
   decide(candle: Candle, position: StrategyPositionState): StrategyDecision {
+    // See BtcHighRiskDebugState — filled in progressively below and
+    // finalized by finishDecision() at every return point, so a diagnostic
+    // consumer (scripts/btcHighRiskParityDiagnostic.ts) gets a complete
+    // trace for every bar, not just the ones that produced a signal.
+    const debug: Partial<BtcHighRiskDebugState> = {
+      barTimeIso: candle.closeTime.toISOString(),
+      hasSwing: this.pivot1h.hasSwing,
+      lastHigh1h: this.pivot1h.lastHigh?.toString() ?? null,
+      lastLow1h: this.pivot1h.lastLow?.toString() ?? null,
+      lastHighBar1h: this.pivot1h.lastHighBar,
+      lastLowBar1h: this.pivot1h.lastLowBar,
+      direction1h: this.pivot1h.direction,
+      validSwing: null,
+      swingPct: null,
+      fib382: null,
+      fib500: null,
+      fib618: null,
+      fib786: null,
+      trend4h: this.pivot4h.direction,
+      zoneWidth4h: this.pivot4h.zoneWidth?.toString() ?? null,
+      validZone4h: null,
+      wick4hRatio: null,
+      validWick4h: false,
+      inNightSession: null,
+      isBullishConfirmed: null,
+      isBearishConfirmed: null,
+      fibBandTouched: null,
+    };
+    const finishDecision = (signal: string, riskFraction?: number): StrategyDecision => {
+      this.lastDebugState = { ...debug, signal } as BtcHighRiskDebugState;
+      return riskFraction === undefined ? { signal: signal as StrategyDecision["signal"] } : { signal: signal as StrategyDecision["signal"], riskFraction };
+    };
+
     if (!position.isOpen) {
       this.stopPrice = null;
     }
@@ -236,6 +306,12 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     // Indicators update on every candle regardless of whether a stop or
     // entry fires this bar — mirrors Pine evaluating every bar.
     this.pivot1h.update(candle);
+    debug.hasSwing = this.pivot1h.hasSwing;
+    debug.lastHigh1h = this.pivot1h.lastHigh?.toString() ?? null;
+    debug.lastLow1h = this.pivot1h.lastLow?.toString() ?? null;
+    debug.lastHighBar1h = this.pivot1h.lastHighBar;
+    debug.lastLowBar1h = this.pivot1h.lastLowBar;
+    debug.direction1h = this.pivot1h.direction;
 
     // ---- Liquidation-tied stop — see the KNOWN GAPS note above. ----
     if (position.isOpen && this.stopPrice !== null) {
@@ -243,31 +319,34 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       const high = toDecimalJs(candle.high);
       if (position.side === "LONG" && low.lessThanOrEqualTo(this.stopPrice)) {
         this.stopPrice = null;
-        return { signal: "EXIT_LONG" };
+        return finishDecision("EXIT_LONG");
       }
       if (position.side === "SHORT" && high.greaterThanOrEqualTo(this.stopPrice)) {
         this.stopPrice = null;
-        return { signal: "EXIT_SHORT" };
+        return finishDecision("EXIT_SHORT");
       }
     }
 
     if (!this.pivot1h.hasSwing) {
-      return { signal: "HOLD" };
+      return finishDecision("HOLD");
     }
 
     const high1h = this.pivot1h.lastHigh as Decimal;
     const low1h = this.pivot1h.lastLow as Decimal;
     const diff = high1h.minus(low1h);
-    const validSwing = diff.div(low1h).mul(100).greaterThanOrEqualTo(this.minSwingPct);
+    const swingPct = diff.div(low1h).mul(100);
+    const validSwing = swingPct.greaterThanOrEqualTo(this.minSwingPct);
+    debug.swingPct = swingPct.toNumber();
+    debug.validSwing = validSwing;
     if (!validSwing) {
-      return { signal: "HOLD" };
+      return finishDecision("HOLD");
     }
 
     const direction = this.pivot1h.direction;
     const isBullish = direction === 1;
     const isBearish = direction === -1;
     if (!isBullish && !isBearish) {
-      return { signal: "HOLD" };
+      return finishDecision("HOLD");
     }
 
     const fib = (pct: number): Decimal => (isBullish ? high1h.minus(diff.mul(pct)) : low1h.plus(diff.mul(pct)));
@@ -275,10 +354,17 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
     const fib500 = fib(0.5);
     const fib618 = fib(0.618);
     const fib786 = fib(0.786);
+    debug.fib382 = fib382.toString();
+    debug.fib500 = fib500.toString();
+    debug.fib618 = fib618.toString();
+    debug.fib786 = fib786.toString();
 
     const trend4h = this.pivot4h.direction;
     const zoneWidth4h = this.pivot4h.zoneWidth;
     const validZone4h = zoneWidth4h !== null && zoneWidth4h.greaterThanOrEqualTo(this.minZoneWidth);
+    debug.trend4h = trend4h;
+    debug.zoneWidth4h = zoneWidth4h?.toString() ?? null;
+    debug.validZone4h = validZone4h;
 
     // ---- 4h candle wick-ratio filter (iteration 15) ----
     // Winners' 4h candle at entry showed real rejection (a big wick
@@ -295,13 +381,18 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       const range4h = h4h.minus(l4h);
       const wick4hRatio = range4h.isZero() ? new Decimal(0) : new Decimal(1).minus(c4h.minus(o4h).abs().div(range4h));
       validWick4h = wick4hRatio.greaterThanOrEqualTo(this.minWick4hRatio);
+      debug.wick4hRatio = wick4hRatio.toString();
     }
+    debug.validWick4h = validWick4h;
 
     const hourUTC = candle.openTime.getUTCHours();
     const inNightSession = hourUTC >= this.sessionStartHour || hourUTC <= this.sessionEndHour;
+    debug.inNightSession = inNightSession;
 
     const isBullishConfirmed = isBullish && trend4h === 1 && validZone4h && inNightSession && validWick4h;
     const isBearishConfirmed = isBearish && trend4h === -1 && validZone4h && inNightSession && validWick4h;
+    debug.isBullishConfirmed = isBullishConfirmed;
+    debug.isBearishConfirmed = isBearishConfirmed;
 
     const price = toDecimalJs(candle.close);
 
@@ -315,35 +406,47 @@ export class BtcHighRiskStrategy implements StrategyAlgorithm {
       let riskFraction: number | null = null;
       if (low.lessThanOrEqualTo(fib786)) {
         riskFraction = this.riskFraction786;
+        debug.fibBandTouched = "786";
       } else if (low.lessThanOrEqualTo(fib618)) {
         riskFraction = null;
+        debug.fibBandTouched = "618";
       } else if (low.lessThanOrEqualTo(fib500)) {
         riskFraction = this.riskFraction500;
+        debug.fibBandTouched = "500";
       } else if (low.lessThanOrEqualTo(fib382)) {
         riskFraction = null;
+        debug.fibBandTouched = "382";
+      } else {
+        debug.fibBandTouched = "none";
       }
       if (riskFraction !== null) {
         this.stopPrice = price.mul(new Decimal(1).minus(this.liqLossFrac));
-        return { signal: "ENTER_LONG", riskFraction };
+        return finishDecision("ENTER_LONG", riskFraction);
       }
     } else if (isBearishConfirmed && position.side !== "SHORT") {
       const high = toDecimalJs(candle.high);
       let riskFraction: number | null = null;
       if (high.greaterThanOrEqualTo(fib786)) {
         riskFraction = this.riskFraction786;
+        debug.fibBandTouched = "786";
       } else if (high.greaterThanOrEqualTo(fib618)) {
         riskFraction = null;
+        debug.fibBandTouched = "618";
       } else if (high.greaterThanOrEqualTo(fib500)) {
         riskFraction = this.riskFraction500;
+        debug.fibBandTouched = "500";
       } else if (high.greaterThanOrEqualTo(fib382)) {
         riskFraction = null;
+        debug.fibBandTouched = "382";
+      } else {
+        debug.fibBandTouched = "none";
       }
       if (riskFraction !== null) {
         this.stopPrice = price.mul(new Decimal(1).plus(this.liqLossFrac));
-        return { signal: "ENTER_SHORT", riskFraction };
+        return finishDecision("ENTER_SHORT", riskFraction);
       }
     }
 
-    return { signal: "HOLD" };
+    return finishDecision("HOLD");
   }
 }

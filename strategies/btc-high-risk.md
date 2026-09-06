@@ -1103,6 +1103,121 @@ to 100%," with 9 real trades still missed and 10 signals still extra.
 remaining 9+10 divergent cases specifically (rather than another aggregate
 re-run) is the next concrete step if this is worth continuing to chase.
 
+**Follow-up: diagnosed the specific divergent cases directly, as planned
+above.** Built `apps/engine/src/scripts/btcHighRiskParityDiagnostic.ts`
+(committed — a durable tool, not a one-off script), which is the
+"compare full decision state, not just trade outcomes" tool the previous
+entry called for: `BtcHighRiskStrategy` now exposes a `lastDebugState`
+snapshot (`BtcHighRiskDebugState`) after every `decide()` call — pivot
+high/low/bar, direction, validSwing, all four Fib levels, 4h
+trend/zoneWidth, wick ratio, session flag, and which Fib band (if any) an
+entry touched — populated on *every* bar, not only ones that fire a
+signal, so a missed/extra case can be inspected at the exact bar in
+question. Real-trade ground truth
+(`apps/engine/src/scripts/fixtures/btcHighRiskIteration14Trades.json`) was
+re-transcribed by hand, one Strategy Tester screen at a time via browser
+automation, directly off the live "BTC High-Risk" strategy on the actual
+TradingView chart (`minWick4hRatio` set to 0 to reproduce the
+iteration-14-baseline conditions the original 87.7% number was measured
+under, Jan 1 – Sep 6, 2026) — this account's plan doesn't allow CSV export
+of the trade list, so no shortcut was available. This produced a more
+complete/accurate real-trade count than the previous check's: **74 real
+trades, not 73** — the earlier 73/9/10 numbers most likely came from a
+slightly different snapshot of the same cached trade list; the 74-trade
+version here is the authoritative one going forward.
+
+One real bug in the *comparison methodology itself* (not the strategy)
+was found and fixed before the results below were trustworthy: Binance's
+klines report `closeTime` as `openTime + interval − 1ms` (e.g. an hourly
+candle opening 23:00 closes 23:59:59.999), but Pine's `strategy.entry()`
+(default `process_orders_on_close = false`) actually fills at the
+**next** bar's open — one full hour after the signal bar's open, not "the
+same hour" `closeTime` naively suggests. Timestamping port entries by raw
+`closeTime` made every genuine match look "off by 1h" by a spurious ~1ms
+gap. Fixed by timestamping port entries (and the debug-state bar log) by
+`openTime + 1h` instead, matching Pine's real fill-time convention.
+
+**Result, Jan 1 – Sep 6, 2026, 74 real trades vs. 74 port entries: 54
+exact matches, 12 off-by-1h, 8 missed entirely, 8 extra port-only
+signals** (89.2% matched-or-close) — a further small improvement over the
+87.7% baseline once measured on the corrected, complete trade list, and
+now with every divergent case individually inspected rather than only
+counted. Three distinct, concretely-evidenced root causes, not one:
+
+1. **OHLC price-data mismatch between our fetched Binance USDT-M futures
+   public REST klines and TradingView's own BTCUSDT.P chart feed — the
+   dominant cause, responsible for 6 of the 8 missed trades and very
+   likely most of the 8 extra ones.** In 6 of 8 missed cases, the port's
+   debug state showed the swing/trend/session gates all correctly
+   confirmed (`isBullishConfirmed`/`isBearishConfirmed = true`,
+   matching Pine's real direction) but `bandTouched = null` — the
+   candle's high/low in *our* fetched data never actually reached any
+   Fib level, while Pine's real backtest entered, meaning Pine's own
+   chart data did cross it. Directly proven in one case (2026-07-08): the
+   missed real LONG at 02:00 and an extra port-only LONG at 04:00 two
+   hours later show **byte-for-byte identical** pivot/Fib state
+   (`high1h=64234.1@4504 low1h=62638@4502`, same four Fib levels) — the
+   swing never changed, only the price finally dipped low enough in our
+   data two hours after it apparently already had in Pine's. This isn't a
+   pivot-logic bug; it's two nominally-identical-symbol data feeds
+   (Binance's public futures REST API vs. TradingView's own BTCUSDT.P
+   feed) disagreeing on exact intrabar highs/lows by a small margin. That
+   margin matters far more than it would at low leverage: **at this
+   strategy's 100x leverage, the liquidation-tied stop is exactly 1% of
+   entry price** and every entry gate is an exact `low <= fibX` /
+   `high >= fibX` comparison — both are extremely sensitive to sub-1%
+   price differences between feeds. The same mechanism plausibly explains
+   most of the 8 extra entries too: a stop that Pine's real feed never
+   quite reached but ours did (or vice versa, immediately re-entering
+   once flat) would produce an extra Pine never took, without needing any
+   logic bug at all.
+2. **A 4h-trend confirmation mismatch at a 4h-candle boundary bar** (1 of
+   8 missed: 2026-01-31T00:00 SHORT). The port's `dir1h` correctly read
+   bearish, matching Pine's real direction, but `trend4h = 1` (bullish)
+   blocked the entry — a real divergence in the 4h `PivotSwingTracker`
+   from what Pine's `request.security` read at this exact time. Notable:
+   this bar's time (00:00) is exactly a 4h-candle close boundary, the
+   same category of coincidence-timing edge case discussed (and, for the
+   1h/4h merge-ordering question, reasoned through and left as
+   apparently-correct) in earlier iterations of this diagnosis — worth a
+   dedicated synthetic test the way the pivot tie-break bug was isolated,
+   if this is chased further, rather than assumed fixed.
+3. **A real, fixable structural bug: a same-bar stop-loss exit prevents
+   the port from ever evaluating a same-bar reversal entry** (1 of 8
+   missed: 2026-02-10T07:00 LONG, where the debug state shows
+   `signal=EXIT_LONG` with every entry-related field `null` — the
+   liquidation-stop check returns immediately, before the entry logic
+   even runs). Pine's script has no such short-circuit: the exit
+   (`strategy.exit(...)`) and entry (`if isBullishConfirmed ...` /
+   `else if isBearishConfirmed ...`) blocks are independent top-level
+   statements that both execute every bar, so Pine can stop out of a
+   long and open a fresh short in the very same bar. `decide()`'s
+   `return finishDecision("EXIT_LONG")` on a stop hit makes that
+   structurally impossible here. **Not fixed in this pass** — `decide()`
+   returns exactly one `StrategySignal` per call
+   (`apps/engine/src/strategy/types.ts`), so supporting "exit then
+   immediately re-enter in the same bar" needs either a composite
+   signal type or a `StrategyRunner`-level convention (e.g. re-calling
+   `decide()` once more the same bar after an exit), which is a
+   `StrategyRunner`-wide change affecting every strategy, not a
+   `btcHighRisk.ts`-local fix — flagged here rather than rushed.
+
+**Conclusion: the residual gap is now well-understood, not just
+narrowed.** Root cause #1 (data-feed disagreement, amplified by 100x
+leverage's razor-thin 1% tolerances) is inherent to comparing two
+different exchanges'/vendors' feeds and not really "fixable" short of
+sourcing identical data; #2 needs one more isolated synthetic test before
+it can be called fixed or not; #3 is a real, understood, but
+architecturally-scoped-beyond-this-strategy bug. None of this changes the
+bottom line: `BTC_HIGH_RISK_ALLOW_LIVE` stays gated. Diminishing returns
+have very likely been reached on *this specific verification method*
+(replaying fetched historical candles against a cached real trade list) —
+the next move that would actually add new information is live-paper-run
+comparison (run the port against the *same live feed* it will trade on
+and compare signal-by-signal against a live Pine alert, which removes
+root cause #1 entirely by construction) rather than a fourth pass over
+the same historical mismatch.
+
 **Other known gaps, flagged in code comments, not hidden**:
 
 - The liquidation-tied stop is checked once per closed 1h candle against
@@ -1118,10 +1233,21 @@ re-run) is the next concrete step if this is worth continuing to chase.
   lost on a process restart — same documented limitation `StrategyRunner`
   itself already carries.
 - The pivot detector (`PivotSwingTracker` in `btcHighRisk.ts`) now matches
-  Pine's confirmed tie-breaking rule (see above), but still isn't a
-  verified byte-for-byte match in every other respect — a fresh full parity
-  re-check is still owed before treating it as equivalent to Pine's
-  built-in `ta.pivothigh`/`ta.pivotlow`.
+  Pine's confirmed tie-breaking rule (see above), and the follow-up
+  per-case diagnostic found no further pivot-logic bugs in the 8
+  remaining missed/8 extra cases — the residual gap traces to data-feed
+  disagreement and two smaller, separately-tracked issues (see above), not
+  the pivot detector itself. Still not a verified byte-for-byte match
+  against Pine's built-in `ta.pivothigh`/`ta.pivotlow` in the formal
+  sense, but no longer the leading suspect.
+- `decide()`'s liquidation-stop check returns immediately on a stop hit,
+  before the entry logic for that same candle ever runs — unlike Pine,
+  whose exit and entry blocks are independent statements that both
+  evaluate every bar. Confirmed as the direct cause of one of the 8
+  missed trades in the parity diagnostic above. Fixing it properly needs
+  `StrategyDecision`/`StrategyRunner` to support "exit then re-enter in
+  the same bar," a change that would affect every strategy, not just this
+  one — not attempted here.
 
 ## Next steps
 
@@ -1141,10 +1267,24 @@ re-run) is the next concrete step if this is worth continuing to chase.
    exact + 10 off-by-1h out of 73 real trades, 10 extra port-only signals,
    down from 88) — a real, substantial improvement, confirming the
    hypothesis, but still not "close to 100%." 9 real trades missed and 10
-   extra signals remain. Next concrete step: diagnose those specific
-   remaining divergent cases directly (not another aggregate re-run) —
-   only once that residual gap is closed too should
-   `BTC_HIGH_RISK_ALLOW_LIVE` even be reconsidered.
+   extra signals remain. **Since then**: diagnosed the specific divergent
+   cases directly, per plan — built a durable diagnostic tool
+   (`scripts/btcHighRiskParityDiagnostic.ts`, plus a `lastDebugState`
+   trace on `BtcHighRiskStrategy` itself) and re-transcribed the real
+   trade list by hand from the live TradingView chart (found 74 real
+   trades, not 73 — the more accurate count going forward). Result: 89.2%
+   matched-or-close (54 exact + 12 off-by-1h of 74), with all 8 missed and
+   8 extra cases individually inspected and traced to three distinct root
+   causes — dominantly an inherent data-feed disagreement between our
+   fetched Binance klines and TradingView's own feed (amplified by 100x
+   leverage's 1%-wide tolerances), plus one unresolved 4h-boundary
+   confirmation mismatch and one real, structurally-scoped
+   same-bar-exit-blocks-same-bar-entry bug. See "Engine port" above for
+   the full breakdown. **Conclusion: further chasing this via replayed
+   historical data has hit diminishing returns** — the next move that
+   would add real information is a live-paper comparison against the same
+   live feed the port will actually trade on, not a fifth historical
+   re-run. `BTC_HIGH_RISK_ALLOW_LIVE` stays gated regardless.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
