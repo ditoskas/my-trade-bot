@@ -6,6 +6,11 @@ node_modules/
 dist/
 *.tsbuildinfo
 
+# apps/engine's long-running diagnostic scripts (e.g.
+# btcHighRiskLiveShadow.ts) write their own logs here — real output, not
+# source, never committed.
+apps/engine/logs/
+
 # secrets — never commit real Binance/Telegram/Mongo credentials
 .env
 .env.*

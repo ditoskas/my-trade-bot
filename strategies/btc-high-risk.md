@@ -1218,6 +1218,56 @@ and compare signal-by-signal against a live Pine alert, which removes
 root cause #1 entirely by construction) rather than a fourth pass over
 the same historical mismatch.
 
+**Follow-up: set up the live-paper comparison itself.** Two read-only
+observers, running independently, neither touching order execution or
+`BTC_HIGH_RISK_ALLOW_LIVE`:
+
+- **Pine side**: added two `log.info()` calls to the live canonical "BTC
+  High-Risk" script (iteration 15, on the real TradingView chart) — one at
+  each real `strategy.entry(...)` call site (not just inside the
+  `isBullishConfirmed`/`isBearishConfirmed` blocks, so this logs exactly
+  when a trade actually fires, not just when the confirmation gate
+  passes). Pure addition: confirmed behaviorally inert by checking the
+  Strategy Tester's key stats were byte-for-byte identical before and
+  after (+617.22 USDT, PF 1.602, 16/56 trades). One real gotcha hit doing
+  this, worth remembering: Pine's log panel has its own **start-date
+  filter**, defaulting to roughly "the last day," which silently hid all
+  the historical log entries until set back to the backtest's actual start
+  (Jan 1, 2026) — don't mistake a filtered-empty log panel for "logging
+  isn't working." Since Pine recomputes a script's entire history
+  (`log.info()` included) on every reopen/recompile, this needs no open
+  tab or running alert to keep working — reopening this same chart later
+  retroactively shows every signal fired since this change, whether the
+  browser was open the whole time or not.
+- **TS side**: `apps/engine/src/scripts/btcHighRiskLiveShadow.ts`
+  (committed) — connects to Binance's real public mainnet futures
+  WebSocket (`wss://fstream.binance.com` via the existing
+  `BinanceFuturesKlineStream`, no API key, no `Broker`, no
+  `StrategyRunner`, no order placement at all), warms up with the same
+  500 1h / 200 4h candle sizes production's `startBtcHighRiskRuntime`
+  actually uses (deliberately not the deep multi-month warm-up the offline
+  diagnostics used — the point is observing exactly what production would
+  see), and logs every `ENTER_LONG`/`ENTER_SHORT`/`EXIT_LONG`/`EXIT_SHORT`
+  signal plus an hourly heartbeat to `apps/engine/logs/btc-high-risk-live-
+  shadow.log` (gitignored — real output, not source). Launched as a
+  detached background process (`Start-Process -WindowStyle Hidden` on
+  Windows) so it survives independent of any interactive shell. To check
+  on it later: `Get-CimInstance Win32_Process -Filter "Name = 'node.exe'"
+  | Where-Object { $_.CommandLine -like "*btcHighRiskLiveShadow*" }` should
+  show a live process (don't rely on a single tracked PID — `npx` wraps
+  the real worker several process layers deep); `Get-Content
+  apps/engine/logs/btc-high-risk-live-shadow.log -Tail 20` shows recent
+  activity.
+
+**This needs real elapsed time, not another session's worth of replay.**
+At roughly 1 real trade every ~3 days historically, a meaningful signal-
+by-signal comparison needs days, not minutes — this is a "set up and
+check back later" item, not something concluded here. When revisiting:
+reopen the TradingView chart (logs repopulate automatically) and read the
+shadow log, and diff the two signal lists directly, the same way the
+offline diagnostic did, but now with cause #1 (feed disagreement) removed
+by construction since both sides are watching the same real-time market.
+
 **Other known gaps, flagged in code comments, not hidden**:
 
 - The liquidation-tied stop is checked once per closed 1h candle against
@@ -1284,7 +1334,14 @@ the same historical mismatch.
    historical data has hit diminishing returns** — the next move that
    would add real information is a live-paper comparison against the same
    live feed the port will actually trade on, not a fifth historical
-   re-run. `BTC_HIGH_RISK_ALLOW_LIVE` stays gated regardless.
+   re-run. `BTC_HIGH_RISK_ALLOW_LIVE` stays gated regardless. **Since
+   then**: that live-paper comparison is now actually running — real-time
+   `log.info()` on the live Pine chart plus a detached read-only TS shadow
+   observer (`scripts/btcHighRiskLiveShadow.ts`) watching the same real
+   mainnet feed, both logging every signal independently. Needs real
+   elapsed days to accumulate enough signals to compare (~1 real trade
+   every 3 days historically) — see "Engine port" above for exactly how to
+   check on it.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
