@@ -399,6 +399,22 @@
     # nginx: basic auth + vhost (creates it if it doesn't exist yet;
     # re-running just re-templates it idempotently)
     # ---------------------------------------------------------------
+    # Hit live: a fresh apt install of nginx ships its own default site
+    # (/etc/nginx/sites-enabled/default) bound to 0.0.0.0:80 -- on a server
+    # that also runs GitLab CE (whose bundled nginx already owns port 80),
+    # nginx then fails to start at all with "bind() to 0.0.0.0:80 failed
+    # (98: Address already in use)", before our own vhost (which only ever
+    # listens on 127.0.0.1:{{ nginx_internal_port }}, see
+    # nginx-vhost.conf.j2) has even been installed. This project's vhost
+    # never needs or uses the default site, so it's removed unconditionally
+    # here, before the first start attempt below -- not made conditional on
+    # the coexisting-nginx scenario, since an unused default site bound to
+    # :80 is a latent conflict risk on ANY box, not just this one.
+    - name: Disable nginx's default site
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
     # Hit live: nginx was installed (apt) but not actually running on the
     # target server -- "already running nginx" per the deployment's own
     # premise turned out to mean "installed," not "started." The base
