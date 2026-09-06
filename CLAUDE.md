@@ -17,6 +17,10 @@ the new/changed files and create a commit describing what that phase delivered â
 phase, not one giant commit at the end. Review what's staged before committing (nothing from
 `node_modules`, no secrets/`.env` files).
 
+**Push after every commit.** The repo's remote is `origin`
+(`git@github.com:ditoskas/my-trade-bot.git`) â€” after creating a commit, `git push` it too, not
+just at the end of a session. Don't batch commits up locally before pushing.
+
 ## Architecture (agreed, see phases for build order)
 
 Three independently-deployable apps, sharing MongoDB (system of record) and Redis (live
