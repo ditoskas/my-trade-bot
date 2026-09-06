@@ -287,15 +287,6 @@
       delegate_to: localhost
       become: false
 
-    # Hit live: three consecutive partial/failed install attempts on the
-    # same server left node_modules in a state where a plain `npm install`
-    # wouldn't fetch lightningcss-linux-x64-gnu (an optional dependency)
-    # even though it's correctly listed and installs fine on its own
-    # (`npm install lightningcss-linux-x64-gnu` in isolation worked
-    # immediately) -- npm's incremental install doesn't reliably reconcile
-    # every optional-dependency gap against an already-partially-populated
-    # tree. Wiping node_modules first makes every run a true clean
-    # install, not just this one-time recovery.
     - name: Remove node_modules for a clean install (all workspaces)
       ansible.builtin.shell: rm -rf node_modules apps/*/node_modules packages/*/node_modules
       args:
@@ -309,6 +300,50 @@
       become: true
       become_user: "{{ deploy_user }}"
       changed_when: true
+
+    # Confirmed live, root cause (not a guess): even a fully clean
+    # `npm install` never installs several native-binary
+    # optionalDependencies that are declared correctly several levels deep
+    # in the workspace tree (lightningcss, @tailwindcss/oxide,
+    # @unrs/resolver-binding, @next/swc all hit this). `npm ls <pkg> --all`
+    # confirms each dependency chain is entirely correct with nothing
+    # peer/optional in between, and installing the missing platform
+    # package directly succeeds instantly -- proving it's specifically
+    # npm's resolution of *transitive* optional platform binaries that's
+    # broken (npm 10.9.8, this workspace layout), not the registry,
+    # network, npm version, or the packages themselves. This must be the
+    # LAST npm step before the build, and must install every affected
+    # package together in one call -- confirmed live that npm's own
+    # dependency-tree pruning pass (which runs on every `npm install`,
+    # regardless of what you're installing) silently removes any of these
+    # platform packages that weren't arguments to *that specific* call, so
+    # fixing them one at a time across separate calls just makes each call
+    # undo the previous one's fix. See files/fix_native_optionals.js.
+    - name: Copy the native-optional-dependency fix script
+      ansible.builtin.copy:
+        src: fix_native_optionals.js
+        dest: "{{ app_dir }}/fix_native_optionals.js"
+        owner: "{{ deploy_user }}"
+        group: "{{ deploy_user }}"
+        mode: "0755"
+
+    - name: Work around npm not resolving native platform binaries for transitive dependencies
+      ansible.builtin.command:
+        cmd: node fix_native_optionals.js
+        chdir: "{{ app_dir }}"
+      become: true
+      become_user: "{{ deploy_user }}"
+      changed_when: true
+
+    # Also confirmed live: a stale .next build cache from an earlier
+    # failed attempt can keep reporting this same error even after the
+    # underlying node_modules state is fixed (Turbopack appears to cache
+    # module-resolution results across builds) -- clear it so every deploy
+    # builds against current reality, not a previous attempt's cache.
+    - name: Clear any stale Next.js build cache
+      ansible.builtin.file:
+        path: "{{ app_dir }}/apps/ui/.next"
+        state: absent
 
     - name: Build the UI for production
       ansible.builtin.command:
