@@ -25,10 +25,20 @@ become_password: ""
 
 # ---- Domain / nginx ----
 domain_name: "trade.toskas.gr"
-# Requires DNS for domain_name already pointing at server_host, and port 80
-# reachable from the internet, before you set this true (Let's Encrypt's
-# HTTP-01 challenge needs both). Start with false, confirm the site loads
-# over plain HTTP, then flip to true and re-run the playbook.
+# This nginx vhost listens on 127.0.0.1 only, not the public port 80/443 —
+# set nginx_internal_port to whatever's free (8081 is just a default).
+# See README.md's "Coexisting with another nginx on the same server"
+# section: if something else on this box (another app, another nginx,
+# GitLab's own bundled one, etc.) already owns port 80/443, that other
+# nginx needs one small, manually-applied config addition to reverse-proxy
+# domain_name to this port — this playbook deliberately does not touch
+# another service's config on its own.
+nginx_internal_port: 8081
+# certbot/Let's Encrypt below only works if THIS nginx is the one actually
+# reachable on port 80 (its HTTP-01 challenge needs that). In the
+# coexistence setup above, TLS for domain_name needs to be issued/
+# terminated at whichever nginx *is* on port 80 instead — out of scope
+# for this playbook; leave this false in that case.
 enable_https: false
 letsencrypt_email: "CHANGE ME"    # required if enable_https is true
 

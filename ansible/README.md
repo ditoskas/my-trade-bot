@@ -113,6 +113,54 @@ re-run. Certbot's nginx plugin extends the vhost with the HTTPS server
 block and a redirect automatically; you don't need to touch the nginx
 template yourself.
 
+**This only works if this playbook's own nginx is the one actually
+listening on port 80.** If something else on the server already owns that
+port (see the next section), TLS needs to happen at whichever nginx *is*
+on port 80 instead — leave `enable_https: false` here and handle the
+certificate on that other nginx's side.
+
+### Coexisting with another nginx on the same server
+
+Hit live on a real deployment: the target server already ran another
+service (GitLab CE) with its own bundled nginx already bound to port 80.
+Only one process can own that port, so this playbook's own nginx vhost
+listens on `127.0.0.1:{{ nginx_internal_port }}` (default 8081) instead
+of the public port — basic auth still happens here, this is just not the
+first hop from the internet anymore.
+
+This means whichever nginx (or other reverse proxy) *does* own port 80/443
+on the box needs one small, additional piece of config to forward
+`domain_name` requests to that internal port. **This playbook doesn't do
+that step for you** — it's a one-time change to a *different* service's
+configuration, which isn't something to apply unattended to infrastructure
+this playbook doesn't own. Apply it manually once, matching whatever
+that other nginx's own config convention is. For a plain nginx, a new
+server block is enough:
+
+```nginx
+server {
+    listen 80;
+    server_name trade.toskas.gr;
+    location / {
+        proxy_pass http://127.0.0.1:8081;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+For GitLab's omnibus-managed nginx specifically (the case this was found
+on): GitLab's own `/etc/gitlab/gitlab.rb` has a documented hook for
+exactly this,
+[`nginx['custom_nginx_config']`](https://docs.gitlab.com/omnibus/settings/nginx/)
+— set it to `include` a separate file (so `gitlab-ctl reconfigure` never
+needs to touch, or risk clobbering, this project's own config), put the
+server block above in that included file, then run `gitlab-ctl
+reconfigure` and confirm GitLab's own site still loads afterward before
+considering it done.
+
 ## What this deploys
 
 - **MongoDB 7.0** and **Redis**, installed natively via `apt`, each bound

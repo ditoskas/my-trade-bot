@@ -436,6 +436,13 @@
     - name: Flush handlers so nginx is serving the vhost before certbot runs
       ansible.builtin.meta: flush_handlers
 
+    # Only works if this nginx is actually reachable on port 80 --
+    # certbot's --nginx plugin needs to complete the HTTP-01 challenge
+    # against it. Not true in the "another nginx already owns port 80"
+    # coexistence setup (see nginx_internal_port's comment in
+    # all.yml.example and README.md) -- TLS there needs to be issued/
+    # terminated at whichever nginx *is* on port 80 instead, which is why
+    # enable_https should stay false in that case.
     - name: Obtain/renew the HTTPS certificate and wire it into the vhost
       ansible.builtin.command:
         cmd: >-
