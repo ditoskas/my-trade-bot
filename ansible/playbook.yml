@@ -415,17 +415,20 @@
         path: /etc/nginx/sites-enabled/default
         state: absent
 
-    # Hit live: nginx was installed (apt) but not actually running on the
-    # target server -- "already running nginx" per the deployment's own
-    # premise turned out to mean "installed," not "started." The base
-    # apt task only ensures the package is present, never the service
-    # state, so make that explicit here too.
-    - name: Ensure nginx is enabled and started
-      ansible.builtin.systemd:
-        name: nginx
-        enabled: true
-        state: started
-
+    # These three used to run AFTER "Ensure nginx is enabled and started"
+    # below -- hit live, a second time, the same underlying mistake as the
+    # default-site fix above: an EARLIER run (before nginx-vhost.conf.j2
+    # was reworked to listen on 127.0.0.1:{{ nginx_internal_port }} instead
+    # of :80 directly) had gotten far enough to install and enable the
+    # OLD listen-80 vhost. Every run since then kept failing at "Ensure
+    # nginx is enabled and started", which sits BEFORE the vhost-install
+    # task -- so that stale, wrong, still-enabled vhost was never
+    # overwritten, and nginx kept trying (and failing) to bind :80 on its
+    # behalf, even after the default site was removed. Moving vhost
+    # setup before the start attempt means nginx is only ever asked to
+    # start once its config is already guaranteed to be the CURRENT
+    # template's, not whatever happened to be installed by some earlier,
+    # possibly-much-older run.
     - name: Set the dashboard's basic auth password
       community.general.htpasswd:
         path: /etc/nginx/.htpasswd-tradebot
@@ -448,6 +451,20 @@
         dest: "/etc/nginx/sites-enabled/{{ domain_name }}.conf"
         state: link
       notify: Reload nginx
+
+    # Hit live: nginx was installed (apt) but not actually running on the
+    # target server -- "already running nginx" per the deployment's own
+    # premise turned out to mean "installed," not "started." The base
+    # apt task only ensures the package is present, never the service
+    # state, so make that explicit here too. Runs AFTER the vhost is
+    # already in place (see comment above) so the very first start attempt
+    # uses a known-correct config, not whatever an earlier run happened to
+    # leave behind.
+    - name: Ensure nginx is enabled and started
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
 
     - name: Flush handlers so nginx is serving the vhost before certbot runs
       ansible.builtin.meta: flush_handlers
