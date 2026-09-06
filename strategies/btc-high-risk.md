@@ -1412,6 +1412,46 @@ was not touched.
    deliberately on a $150 account. The sizing math itself
    (`StrategyRunner.enterPosition`'s margin/notional/quantity
    calculation) doesn't depend on margin mode and needed no changes.
+   **Since then**: investigated two ideas the user liked from an unrelated
+   AI conversation about a generic "liquidity sweep at 15x" strategy —
+   (a) a fixed take-profit / defined risk:reward framing instead of the
+   current "ride until reversal" exit, and (b) whether the specific
+   London/New York session-*open* hours (not the whole day session)
+   behave differently. Both tested live against real data on a script
+   copy, not the canonical one. **(a) rejected**: adding a fixed TP
+   (as a multiple of the existing liquidation-tied stop) monotonically
+   hurt every metric tested (e.g. TP at 3x stop: +$147.11, PF 1.186, vs.
+   the current no-TP +$617.22, PF 1.602) — this just reconfirms iteration
+   1→2's original finding on today's much more filtered entries; riding
+   to reversal still captures value a fixed target throws away. **(b) a
+   real, distinct finding, but on a small sample**: run as its own
+   independent backtest (not post-hoc bucketing), the London-open window
+   (08:00-10:00 UTC) alone shows PF 2.088 on 18 trades (+$422.20, DD
+   13.93%) — genuinely better than the current night-session baseline's
+   PF 1.602 — while the New York-open window (13:00-15:00 UTC) does not
+   (PF 0.896, in line with the rest of the excluded day session). DeepSeek's
+   claim was only half right: London open, not both opens. 18 trades is
+   too small to act on by itself (same caution already applied to the 0.6
+   wick-ratio threshold) — the concrete next step, not done here, is
+   testing `inNightSess = (hour >= 20 or hour <= 6) or (hour >= 8 and
+   hour <= 10)` as an *addition* to the current session filter and
+   live-verifying it on its own before adopting.
+   **Also since then**: the canonical "BTC High-Risk" Pine script itself
+   (the one carrying the live-shadow `log.info()` lines from the
+   live-paper setup above) was found missing from this TradingView
+   account's saved scripts — discovered incidentally while investigating
+   (a)/(b) above, cause unknown, predates that work. Did not affect the
+   real `apps/engine` trading at any point (that runs its own independent
+   TypeScript port against the real Binance feed, with no runtime
+   dependency on this Pine script) — only the Pine-side half of the
+   live-paper comparison was affected, for an unknown span of time up to
+   this discovery. Recovered by reconstructing verbatim from this doc's
+   own Pine Script section (confirmed byte-faithful: re-running it
+   reproduced the exact known baseline, +$617.22/PF 1.602/DD 16.57%/56
+   trades) and re-adding the same two `log.info()` lines described above.
+   Saved back under the same "BTC High-Risk" name. Worth periodically
+   confirming this script still exists given it silently disappeared once
+   already, for a reason not yet identified.
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
