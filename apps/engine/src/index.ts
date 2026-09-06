@@ -1,16 +1,24 @@
 import { ObjectId, type Db } from "mongodb";
-import { closeMongo, connectMongo, ensureIndexes, strategiesCollection, toDecimal128, type Strategy } from "@trade-bot/shared";
+import {
+  auditLogCollection,
+  closeMongo,
+  connectMongo,
+  ensureIndexes,
+  strategiesCollection,
+  toDecimal128,
+  type Strategy,
+} from "@trade-bot/shared";
 import type { Broker } from "./broker/types";
 import { BinanceFuturesBroker } from "./broker/binanceFuturesBroker";
 import { PaperBroker } from "./broker/paperBroker";
-import { startControlApi } from "./controlApi";
+import { startControlApi, type StrategyActionResult } from "./controlApi";
 import { EventPublisher } from "./events/redisPublisher";
 import { fetchHistoricalCandles } from "./marketData/binancePublic";
 import { BinanceKlineStream } from "./marketData/binanceKlineStream";
 import { fetchHistoricalFuturesCandles } from "./marketData/binanceFuturesPublic";
 import { BinanceFuturesKlineStream } from "./marketData/binanceFuturesKlineStream";
 import { reconcile } from "./reconciliation/reconcile";
-import { StrategyRegistry } from "./registry";
+import { StrategyRegistry, type RegisteredStrategy } from "./registry";
 import { CapitalLedger } from "./risk/capitalLedger";
 import { RiskManager } from "./risk/riskManager";
 import { BTC_HIGH_RISK_AUX_TAG_4H, BtcHighRiskStrategy } from "./strategy/btcHighRisk";
@@ -101,12 +109,57 @@ async function getOrCreateStrategy(db: Db, def: DemoStrategyDef): Promise<Strate
       maxLeverage: 3,
     },
     config: { fastPeriod: def.fastPeriod, slowPeriod: def.slowPeriod },
+    // Off by default — see the `enabled` field's comment on the Strategy
+    // model. A brand-new deployment starts every strategy disabled; only
+    // enabling one via the dashboard (or a previous run having already
+    // done so — this only applies to a doc's *first* creation) starts it.
+    enabled: false,
     killSwitchEngaged: false,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
   await strategiesCollection(db).insertOne(doc);
   return doc;
+}
+
+// Builds and starts everything a demo strategy needs (algorithm, warm-up,
+// broker, runner, market-data stream) and returns it ready to register —
+// pulled out of the old inline boot loop so the exact same construction
+// logic can also run later, on demand, when enableStrategy calls it for a
+// strategy that wasn't running at boot.
+async function startDemoStrategy(
+  db: Db,
+  def: DemoStrategyDef,
+  doc: Strategy,
+  publisher: EventPublisher,
+): Promise<RegisteredStrategy> {
+  const algorithm = new MovingAverageCrossStrategy(def.symbol, def.fastPeriod, def.slowPeriod);
+
+  try {
+    const history = await fetchHistoricalCandles(def.symbol, def.interval, def.slowPeriod);
+    warmUpAlgorithm(algorithm, history);
+    console.log(`[engine] warmed up "${doc.slug}" with ${history.length} historical candles`);
+  } catch (error) {
+    console.warn(`[engine] couldn't warm up "${doc.slug}" (${(error as Error).message}) — starting cold`);
+  }
+
+  const broker = new PaperBroker();
+  const runner = new StrategyRunner(db, doc, algorithm, broker, new RiskManager(), new CapitalLedger(db), publisher);
+  await runner.initialize();
+
+  const stream = new BinanceKlineStream({
+    symbol: def.symbol,
+    interval: def.interval,
+    onClosedCandle: async (candle) => {
+      broker.setPrice(candle.symbol, candle.close);
+      await runner.onCandle(candle);
+    },
+    onError: (error) => console.error(`[engine] ${def.symbol} stream error:`, error.message),
+  });
+  stream.start();
+
+  console.log(`[engine] strategy "${doc.slug}" live on ${def.symbol} (${def.interval} candles)`);
+  return { doc, runner, stream };
 }
 
 const BTC_HIGH_RISK_SLUG = "btc-high-risk";
@@ -116,12 +169,11 @@ const BTC_HIGH_RISK_SYMBOL = "BTCUSDT";
 // ceiling (20x) is deliberately left alone for every other strategy.
 const BTC_HIGH_RISK_LEVERAGE = 100;
 
-// Runs on PaperBroker for now (see strategies/btc-high-risk.md's Engine
-// port section) — real futures market data, simulated fills, zero
-// exchange calls. This is the "port to engine, verify it runs" step;
-// swapping in BinanceFuturesBroker for futures-testnet, then a real
-// account, are deliberate later steps per CLAUDE.md's lifecycle policy,
-// not done here.
+// Off by default, same as every other strategy (see getOrCreateStrategy's
+// comment on `enabled`) — this is in addition to, not instead of, the
+// existing BTC_HIGH_RISK_ALLOW_LIVE gate below: even once someone enables
+// this from the dashboard, it still can't reach a real account without
+// that second, strategy-specific switch also being set.
 async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
   const existing = await strategiesCollection(db).findOne({ slug: BTC_HIGH_RISK_SLUG });
   if (existing) {
@@ -153,12 +205,119 @@ async function getOrCreateBtcHighRiskStrategy(db: Db): Promise<Strategy> {
       maxLeverage: BTC_HIGH_RISK_LEVERAGE,
     },
     config: {},
+    enabled: false,
     killSwitchEngaged: false,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
   await strategiesCollection(db).insertOne(doc);
   return doc;
+}
+
+// Same extraction rationale as startDemoStrategy above — this used to be
+// inline in main()'s boot loop; now enableStrategy can call it too.
+async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPublisher): Promise<RegisteredStrategy> {
+  const algorithm = new BtcHighRiskStrategy({ symbol: BTC_HIGH_RISK_SYMBOL, leverage: BTC_HIGH_RISK_LEVERAGE });
+
+  // Futures data, not spot (see marketData/binanceFuturesPublic.ts) —
+  // this strategy was calibrated against BTCUSDT.P, not spot BTCUSDT.
+  try {
+    const history1h = await fetchHistoricalFuturesCandles(BTC_HIGH_RISK_SYMBOL, "1h", 500);
+    warmUpAlgorithm(algorithm, history1h);
+    const history4h = await fetchHistoricalFuturesCandles(BTC_HIGH_RISK_SYMBOL, "4h", 200);
+    warmUpAuxCandles(algorithm, BTC_HIGH_RISK_AUX_TAG_4H, history4h);
+    console.log(
+      `[engine] warmed up "${doc.slug}" with ${history1h.length} 1h + ${history4h.length} 4h historical futures candles`,
+    );
+  } catch (error) {
+    console.warn(`[engine] couldn't warm up "${doc.slug}" (${(error as Error).message}) — starting cold`);
+  }
+
+  const usingFutures = Boolean(BINANCE_FUTURES_API_KEY && BINANCE_FUTURES_API_SECRET);
+  const wouldBeLive = usingFutures && !BINANCE_FUTURES_USE_TESTNET;
+  if (wouldBeLive && !BTC_HIGH_RISK_ALLOW_LIVE) {
+    console.warn(
+      `[engine] BINANCE_FUTURES_USE_TESTNET=false but BTC_HIGH_RISK_ALLOW_LIVE isn't "true" — forcing ` +
+        `"${doc.slug}" onto testnet regardless. This strategy's TypeScript port isn't yet verified against ` +
+        `its Pine backtest (see strategies/btc-high-risk.md's Engine port section) and won't touch a real ` +
+        `account until that's resolved and this override is set deliberately.`,
+    );
+  }
+  const effectiveUseTestnet = wouldBeLive && !BTC_HIGH_RISK_ALLOW_LIVE ? true : BINANCE_FUTURES_USE_TESTNET;
+  const isLive = usingFutures && !effectiveUseTestnet;
+
+  const broker: Broker = usingFutures
+    ? new BinanceFuturesBroker({
+        apiKey: BINANCE_FUTURES_API_KEY as string,
+        apiSecret: BINANCE_FUTURES_API_SECRET as string,
+        useTestnet: effectiveUseTestnet,
+      })
+    : new PaperBroker();
+
+  if (broker instanceof BinanceFuturesBroker) {
+    await broker.configureOneWayPositionMode();
+    await broker.configureSymbol(BTC_HIGH_RISK_SYMBOL, BTC_HIGH_RISK_LEVERAGE, "ISOLATED");
+    console.log(
+      `[engine] "${doc.slug}" configured on Binance futures ${effectiveUseTestnet ? "TESTNET" : "REAL ACCOUNT"} ` +
+        `(one-way mode, ISOLATED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
+    );
+  }
+
+  // Sync broker/lifecycle to Mongo every startup, not just at doc
+  // creation — credentials (and therefore which broker actually runs)
+  // can change between restarts without the Mongo doc being recreated.
+  doc.broker = usingFutures ? "binance-futures" : "paper";
+  doc.lifecycleState = isLive ? "live_small" : "paper";
+  doc.updatedAt = new Date();
+  await strategiesCollection(db).updateOne(
+    { _id: doc._id },
+    { $set: { broker: doc.broker, lifecycleState: doc.lifecycleState, updatedAt: doc.updatedAt } },
+  );
+
+  // Dedicated RiskManager instance with a 100x ceiling — every other
+  // strategy still gets the default RiskManager()'s 20x ceiling.
+  const runner = new StrategyRunner(
+    db,
+    doc,
+    algorithm,
+    broker,
+    new RiskManager(BTC_HIGH_RISK_LEVERAGE),
+    new CapitalLedger(db),
+    publisher,
+  );
+  await runner.initialize();
+
+  const stream = new BinanceFuturesKlineStream({
+    symbol: BTC_HIGH_RISK_SYMBOL,
+    interval: "1h",
+    onClosedCandle: async (candle) => {
+      if (broker instanceof PaperBroker) {
+        broker.setPrice(candle.symbol, candle.close);
+      }
+      await runner.onCandle(candle);
+    },
+    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 1h futures stream error:`, error.message),
+  });
+  stream.start();
+
+  const auxStream4h = new BinanceFuturesKlineStream({
+    symbol: BTC_HIGH_RISK_SYMBOL,
+    interval: "4h",
+    onClosedCandle: (candle) => {
+      algorithm.onAuxCandle(BTC_HIGH_RISK_AUX_TAG_4H, candle);
+    },
+    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 4h futures stream error:`, error.message),
+  });
+  auxStream4h.start();
+
+  console.log(`[engine] strategy "${doc.slug}" live on ${BTC_HIGH_RISK_SYMBOL} futures (1h candles + 4h confirmation)`);
+  return { doc, runner, stream, auxStreams: [auxStream4h] };
+}
+
+interface StrategyCatalogEntry {
+  slug: string;
+  getOrCreateDoc: (db: Db) => Promise<Strategy>;
+  start: (db: Db, doc: Strategy, publisher: EventPublisher) => Promise<RegisteredStrategy>;
 }
 
 async function main(): Promise<void> {
@@ -169,135 +328,135 @@ async function main(): Promise<void> {
   const publisher = await EventPublisher.connect(REDIS_URL);
   const registry = new StrategyRegistry(db);
 
-  for (const def of DEMO_STRATEGIES) {
-    const doc = await getOrCreateStrategy(db, def);
-    const algorithm = new MovingAverageCrossStrategy(def.symbol, def.fastPeriod, def.slowPeriod);
+  // Every strategy the engine knows how to run, whether or not it's
+  // currently enabled. Adding a new strategy means adding an entry here
+  // and deploying — see CLAUDE.md's "Adding a new strategy" section for
+  // the full process. It shows up disabled (enabled: false, per
+  // getOrCreateStrategy/getOrCreateBtcHighRiskStrategy's default) until
+  // someone explicitly turns it on from the dashboard; nothing here
+  // starts a strategy's runner or opens a market-data connection just
+  // because it's in this list.
+  const catalog: StrategyCatalogEntry[] = [
+    ...DEMO_STRATEGIES.map(
+      (def): StrategyCatalogEntry => ({
+        slug: def.slug,
+        getOrCreateDoc: (db) => getOrCreateStrategy(db, def),
+        start: (db, doc, publisher) => startDemoStrategy(db, def, doc, publisher),
+      }),
+    ),
+    {
+      slug: BTC_HIGH_RISK_SLUG,
+      getOrCreateDoc: getOrCreateBtcHighRiskStrategy,
+      start: startBtcHighRiskRuntime,
+    },
+  ];
 
-    try {
-      const history = await fetchHistoricalCandles(def.symbol, def.interval, def.slowPeriod);
-      warmUpAlgorithm(algorithm, history);
-      console.log(`[engine] warmed up "${doc.slug}" with ${history.length} historical candles`);
-    } catch (error) {
-      console.warn(`[engine] couldn't warm up "${doc.slug}" (${(error as Error).message}) — starting cold`);
+  for (const entry of catalog) {
+    const doc = await entry.getOrCreateDoc(db);
+    if (doc.enabled) {
+      const registered = await entry.start(db, doc, publisher);
+      registry.register(registered);
+    } else {
+      console.log(
+        `[engine] strategy "${doc.slug}" exists but is disabled — not starting (enable it from the dashboard)`,
+      );
     }
-
-    const broker = new PaperBroker();
-    const runner = new StrategyRunner(db, doc, algorithm, broker, new RiskManager(), new CapitalLedger(db), publisher);
-
-    const stream = new BinanceKlineStream({
-      symbol: def.symbol,
-      interval: def.interval,
-      onClosedCandle: async (candle) => {
-        broker.setPrice(candle.symbol, candle.close);
-        await runner.onCandle(candle);
-      },
-      onError: (error) => console.error(`[engine] ${def.symbol} stream error:`, error.message),
-    });
-    stream.start();
-
-    registry.register({ doc, runner, stream });
-    console.log(`[engine] strategy "${doc.slug}" live on ${def.symbol} (${def.interval} candles)`);
   }
 
-  {
-    const doc = await getOrCreateBtcHighRiskStrategy(db);
-    const algorithm = new BtcHighRiskStrategy({ symbol: BTC_HIGH_RISK_SYMBOL, leverage: BTC_HIGH_RISK_LEVERAGE });
-
-    // Futures data, not spot (see marketData/binanceFuturesPublic.ts) —
-    // this strategy was calibrated against BTCUSDT.P, not spot BTCUSDT.
+  // Starts a catalog strategy that isn't currently running. A no-op
+  // (reports success) if it's already running — enabling an already-
+  // enabled strategy isn't an error. See StrategyRunner.initialize for how
+  // this stays safe even if the strategy has a real position open from
+  // before the engine last restarted.
+  // Shared by enableStrategy/disableStrategy — same "write the durable
+  // record, then best-effort tell the live dashboard" shape
+  // StrategyRunner.audit uses for every other engine event.
+  async function auditAndPublish(
+    strategyId: Strategy["_id"],
+    slug: string,
+    eventType: "ENABLED" | "DISABLED",
+  ): Promise<void> {
     try {
-      const history1h = await fetchHistoricalFuturesCandles(BTC_HIGH_RISK_SYMBOL, "1h", 500);
-      warmUpAlgorithm(algorithm, history1h);
-      const history4h = await fetchHistoricalFuturesCandles(BTC_HIGH_RISK_SYMBOL, "4h", 200);
-      warmUpAuxCandles(algorithm, BTC_HIGH_RISK_AUX_TAG_4H, history4h);
-      console.log(
-        `[engine] warmed up "${doc.slug}" with ${history1h.length} 1h + ${history4h.length} 4h historical futures candles`,
-      );
+      await auditLogCollection(db).insertOne({
+        _id: new ObjectId(),
+        strategyId,
+        eventType,
+        source: "engine",
+        payload: {},
+        timestamp: new Date(),
+      });
     } catch (error) {
-      console.warn(`[engine] couldn't warm up "${doc.slug}" (${(error as Error).message}) — starting cold`);
+      console.error(`[engine] audit log write failed for ${eventType} on "${slug}":`, (error as Error).message);
     }
+    await publisher.publish({
+      type: eventType,
+      strategyId: strategyId.toHexString(),
+      strategySlug: slug,
+      payload: { enabled: eventType === "ENABLED" },
+    });
+  }
 
-    const usingFutures = Boolean(BINANCE_FUTURES_API_KEY && BINANCE_FUTURES_API_SECRET);
-    const wouldBeLive = usingFutures && !BINANCE_FUTURES_USE_TESTNET;
-    if (wouldBeLive && !BTC_HIGH_RISK_ALLOW_LIVE) {
-      console.warn(
-        `[engine] BINANCE_FUTURES_USE_TESTNET=false but BTC_HIGH_RISK_ALLOW_LIVE isn't "true" — forcing ` +
-          `"${doc.slug}" onto testnet regardless. This strategy's TypeScript port isn't yet verified against ` +
-          `its Pine backtest (see strategies/btc-high-risk.md's Engine port section) and won't touch a real ` +
-          `account until that's resolved and this override is set deliberately.`,
-      );
+  async function enableStrategy(slug: string): Promise<StrategyActionResult> {
+    if (registry.get(slug)) {
+      return { ok: true };
     }
-    const effectiveUseTestnet = wouldBeLive && !BTC_HIGH_RISK_ALLOW_LIVE ? true : BINANCE_FUTURES_USE_TESTNET;
-    const isLive = usingFutures && !effectiveUseTestnet;
-
-    const broker: Broker = usingFutures
-      ? new BinanceFuturesBroker({
-          apiKey: BINANCE_FUTURES_API_KEY as string,
-          apiSecret: BINANCE_FUTURES_API_SECRET as string,
-          useTestnet: effectiveUseTestnet,
-        })
-      : new PaperBroker();
-
-    if (broker instanceof BinanceFuturesBroker) {
-      await broker.configureOneWayPositionMode();
-      await broker.configureSymbol(BTC_HIGH_RISK_SYMBOL, BTC_HIGH_RISK_LEVERAGE, "ISOLATED");
-      console.log(
-        `[engine] "${doc.slug}" configured on Binance futures ${effectiveUseTestnet ? "TESTNET" : "REAL ACCOUNT"} ` +
-          `(one-way mode, ISOLATED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
-      );
+    const entry = catalog.find((candidate) => candidate.slug === slug);
+    if (!entry) {
+      return { ok: false, error: `unknown strategy "${slug}"` };
     }
-
-    // Sync broker/lifecycle to Mongo every startup, not just at doc
-    // creation — credentials (and therefore which broker actually runs)
-    // can change between restarts without the Mongo doc being recreated.
-    doc.broker = usingFutures ? "binance-futures" : "paper";
-    doc.lifecycleState = isLive ? "live_small" : "paper";
-    doc.updatedAt = new Date();
+    const doc = await entry.getOrCreateDoc(db);
+    const registered = await entry.start(db, doc, publisher);
+    registered.doc.enabled = true;
+    registered.doc.updatedAt = new Date();
     await strategiesCollection(db).updateOne(
-      { _id: doc._id },
-      { $set: { broker: doc.broker, lifecycleState: doc.lifecycleState, updatedAt: doc.updatedAt } },
+      { _id: registered.doc._id },
+      { $set: { enabled: true, updatedAt: registered.doc.updatedAt } },
     );
-
-    // Dedicated RiskManager instance with a 100x ceiling — every other
-    // strategy still gets the default RiskManager()'s 20x ceiling.
-    const runner = new StrategyRunner(
-      db,
-      doc,
-      algorithm,
-      broker,
-      new RiskManager(BTC_HIGH_RISK_LEVERAGE),
-      new CapitalLedger(db),
-      publisher,
-    );
-
-    const stream = new BinanceFuturesKlineStream({
-      symbol: BTC_HIGH_RISK_SYMBOL,
-      interval: "1h",
-      onClosedCandle: async (candle) => {
-        if (broker instanceof PaperBroker) {
-          broker.setPrice(candle.symbol, candle.close);
-        }
-        await runner.onCandle(candle);
-      },
-      onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 1h futures stream error:`, error.message),
-    });
-    stream.start();
-
-    const auxStream4h = new BinanceFuturesKlineStream({
-      symbol: BTC_HIGH_RISK_SYMBOL,
-      interval: "4h",
-      onClosedCandle: (candle) => {
-        algorithm.onAuxCandle(BTC_HIGH_RISK_AUX_TAG_4H, candle);
-      },
-      onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 4h futures stream error:`, error.message),
-    });
-    auxStream4h.start();
-
-    registry.register({ doc, runner, stream, auxStreams: [auxStream4h] });
-    console.log(`[engine] strategy "${doc.slug}" live on ${BTC_HIGH_RISK_SYMBOL} futures (1h candles + 4h confirmation)`);
+    registry.register(registered);
+    await auditAndPublish(registered.doc._id, slug, "ENABLED");
+    console.log(`[engine] strategy "${slug}" enabled via the dashboard`);
+    return { ok: true };
   }
 
-  const controlApiServer = startControlApi({ port: CONTROL_API_PORT, authToken: CONTROL_API_TOKEN, registry });
+  // Stops a running catalog strategy's runner and market-data connections
+  // and marks it disabled in Mongo. Refuses while a real position is open
+  // — see StrategyRunner.hasOpenPosition's comment on why: stopping the
+  // runner would abandon that position's exit management entirely, with
+  // nothing left watching it for a stop or a reversal signal.
+  async function disableStrategy(slug: string): Promise<StrategyActionResult> {
+    const entry = registry.get(slug);
+    if (!entry) {
+      // Not currently running (already disabled, or an unknown slug) —
+      // sync the flag in Mongo anyway in case it's out of sync, but only
+      // if the strategy actually exists.
+      const result = await strategiesCollection(db).updateOne(
+        { slug },
+        { $set: { enabled: false, updatedAt: new Date() } },
+      );
+      return result.matchedCount > 0 ? { ok: true } : { ok: false, error: `unknown strategy "${slug}"` };
+    }
+    if (entry.runner.hasOpenPosition()) {
+      return { ok: false, error: `"${slug}" has an open position — wait for it to close before disabling` };
+    }
+    registry.unregister(slug);
+    entry.doc.enabled = false;
+    entry.doc.updatedAt = new Date();
+    await strategiesCollection(db).updateOne(
+      { _id: entry.doc._id },
+      { $set: { enabled: false, updatedAt: entry.doc.updatedAt } },
+    );
+    await auditAndPublish(entry.doc._id, slug, "DISABLED");
+    console.log(`[engine] strategy "${slug}" disabled via the dashboard`);
+    return { ok: true };
+  }
+
+  const controlApiServer = startControlApi({
+    port: CONTROL_API_PORT,
+    authToken: CONTROL_API_TOKEN,
+    registry,
+    enableStrategy,
+    disableStrategy,
+  });
 
   const heartbeat = setInterval(() => {
     for (const entry of registry.list()) {

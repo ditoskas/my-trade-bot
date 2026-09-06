@@ -44,6 +44,26 @@ export class StrategyRegistry {
     return [...this.strategies.values()];
   }
 
+  // Used by the dashboard's disable control — stops the strategy's stream
+  // and any auxiliary market-data connections and removes it from the
+  // registry. Does not touch Mongo (the `enabled: false` write happens in
+  // index.ts's disableStrategy, which calls this after confirming there's
+  // no open position to abandon) and does not check for one itself — that
+  // check belongs to the caller, since only the caller knows whether it's
+  // safe to stop watching this strategy's position.
+  unregister(slug: string): boolean {
+    const entry = this.strategies.get(slug);
+    if (!entry) {
+      return false;
+    }
+    entry.stream.stop();
+    for (const aux of entry.auxStreams ?? []) {
+      aux.stop();
+    }
+    this.strategies.delete(slug);
+    return true;
+  }
+
   async setLifecycleState(slug: string, state: Strategy["lifecycleState"]): Promise<boolean> {
     const entry = this.strategies.get(slug);
     if (!entry) {

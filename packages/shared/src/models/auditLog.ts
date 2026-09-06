@@ -8,7 +8,19 @@ export type AuditEventType =
   | "RISK_BLOCK"
   | "KILL_SWITCH"
   | "RECONCILIATION_MISMATCH"
-  | "COMMAND";
+  | "COMMAND"
+  // A real open position was found on the exchange when a strategy's
+  // runner started up (see StrategyRunner.initialize) — position tracking
+  // is in-memory only, so this happens whenever the engine restarts while
+  // a position is open. Distinct from RISK_BLOCK: nothing was blocked,
+  // this is recording that in-memory state was resynced to reality.
+  | "POSITION_RECOVERED"
+  // A strategy's runner/market-data connections were started or stopped at
+  // runtime via the dashboard's enable/disable control (see index.ts's
+  // enableStrategy/disableStrategy) — distinct from pause/resume, which
+  // only blocks new entries while the runner keeps running.
+  | "ENABLED"
+  | "DISABLED";
 
 export type AuditSource = "engine" | "chatops" | "ui";
 

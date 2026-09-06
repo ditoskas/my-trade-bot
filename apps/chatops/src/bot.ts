@@ -72,9 +72,11 @@ export function createBot(token: string, allowedChatIds: Set<number>, controlApi
       return;
     }
     try {
-      const ok = await controlApi.runAction(slug, action);
+      const result = await controlApi.runAction(slug, action);
       await ctx.reply(
-        ok ? `${action} applied to "${slug}".` : `"${slug}" isn't running in the engine right now.`,
+        result.ok
+          ? `${action} applied to "${slug}".`
+          : (result.error ?? `"${slug}" isn't running in the engine right now.`),
       );
     } catch (error) {
       await ctx.reply(`Couldn't reach the engine: ${(error as Error).message}`);

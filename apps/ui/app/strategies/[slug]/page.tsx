@@ -65,6 +65,7 @@ export default async function StrategyDetailPage({ params }: { params: Promise<{
           slug={strategy.slug}
           initialLifecycleState={strategy.lifecycleState}
           initialKillSwitchEngaged={strategy.killSwitchEngaged}
+          initialEnabled={strategy.enabled}
         />
       </div>
 

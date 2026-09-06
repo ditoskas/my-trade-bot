@@ -1,10 +1,22 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { StrategyRegistry } from "./registry";
 
+export interface StrategyActionResult {
+  ok: boolean;
+  error?: string;
+}
+
 export interface ControlApiOptions {
   port: number;
   authToken: string;
   registry: StrategyRegistry;
+  // Enable/disable are handled outside StrategyRegistry (unlike
+  // pause/resume/kill) because starting a strategy that isn't currently
+  // registered means actually constructing its algorithm/broker/streams —
+  // logic that lives in index.ts's strategy catalog, not here or in the
+  // registry. These are index.ts's enableStrategy/disableStrategy.
+  enableStrategy: (slug: string) => Promise<StrategyActionResult>;
+  disableStrategy: (slug: string) => Promise<StrategyActionResult>;
 }
 
 // Minimal internal HTTP API — the UI's server-side routes and, later,
@@ -63,6 +75,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, options:
       lifecycleState: entry.doc.lifecycleState,
       killSwitchEngaged: entry.doc.killSwitchEngaged,
       symbols: entry.doc.symbols,
+      enabled: entry.doc.enabled,
     }));
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(status));
@@ -74,6 +87,7 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, options:
     const action = segments[2];
 
     let ok = false;
+    let error: string | undefined;
     // "resume" always goes back to "paper" — every strategy in this system
     // is paper-only so far (Phase 5/6 add real promotion between lifecycle
     // states with an actual "previous state" concept; not needed yet).
@@ -85,10 +99,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, options:
       ok = await options.registry.setKillSwitch(slug, true);
     } else if (action === "unkill") {
       ok = await options.registry.setKillSwitch(slug, false);
+    } else if (action === "enable") {
+      ({ ok, error } = await options.enableStrategy(slug));
+    } else if (action === "disable") {
+      ({ ok, error } = await options.disableStrategy(slug));
     }
 
-    res.writeHead(ok ? 200 : 404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok }));
+    res.writeHead(ok ? 200 : 400, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok, error }));
     return;
   }
 

@@ -20,6 +20,7 @@ export default async function HomePage() {
     allocatedCapital: strategy.allocatedCapital.toString(),
     allocatedCapitalAsset: strategy.allocatedCapitalAsset,
     maxLeverage: strategy.riskLimits.maxLeverage,
+    enabled: strategy.enabled,
   }));
 
   return (

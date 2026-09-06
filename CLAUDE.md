@@ -62,6 +62,54 @@ without modification.
 - **Money fields are always `Decimal128`, never floats.**
 - Every strategy is promoted through lifecycle states, not switched straight to live-with-real-money:
   draft → backtested → paper trading → live (small capital) → live (full) → paused → retired.
+- **Every strategy defaults to disabled and holds at most one open position.** See "Enabling/
+  disabling strategies" below — a fresh deployment starts with nothing trading until explicitly
+  turned on per strategy from the dashboard, and the engine reconciles real exchange position state
+  on startup so a restart can't cause a strategy to double-enter on top of a position it already
+  holds.
+
+### Enabling/disabling strategies, and adding a new one
+
+Every `Strategy` document has an `enabled: boolean` field (`packages/shared/src/models/strategy.ts`),
+separate from `lifecycleState` — `lifecycleState` is capital-promotion stage (draft → ... →
+live_full), `enabled` is "does the engine even instantiate this strategy's runner and market-data
+connections at all." A strategy the engine has never seen before is created with `enabled: false`
+(see `getOrCreateStrategy`/`getOrCreateBtcHighRiskStrategy` in `apps/engine/src/index.ts`) — **a
+fresh deployment starts every strategy off**, nothing places an order until someone explicitly
+enables it.
+
+- **Enable/disable from the dashboard**: the strategy list and detail pages
+  (`apps/ui/app/StrategyList.tsx`, `apps/ui/app/strategies/[slug]/StrategyControls.tsx`) call
+  `POST /strategies/:slug/enable` / `/disable` on the Engine's control API (`controlApi.ts`),
+  wired to `enableStrategy`/`disableStrategy` closures defined in `index.ts`'s `main()`. Enabling
+  actually constructs and starts that strategy's algorithm/broker/runner/market-data stream(s) (the
+  same construction logic used at boot, extracted into per-strategy `start*` functions so both
+  paths share it) and flips `enabled: true` in Mongo; disabling stops the stream(s), removes it from
+  the in-memory `StrategyRegistry`, and flips `enabled: false`. Distinct from pause/resume (which
+  keep the runner running and only block new entries) and the kill switch (same). This is logged to
+  `audit_log` as `ENABLED`/`DISABLED` and pushed live over the dashboard's SSE feed.
+- **Disabling refuses to run while a real position is open** (`StrategyRunner.hasOpenPosition()`) —
+  stopping the runner would abandon that position's exit management entirely (no more stop checks,
+  no more reversal signals), with nothing left watching it. Wait for the position to close (or use
+  the kill switch to stop new entries while it does) before disabling.
+- **Restart-safety**: position tracking is otherwise in-memory only (a known limitation since
+  Phase 2). `StrategyRunner.initialize()` — called right after construction, before any live candle
+  is processed, both at boot and when `enableStrategy` starts one on demand — reconciles that
+  in-memory state against the real exchange via the broker's optional `getOpenPosition()` (see
+  `Broker` in `apps/engine/src/broker/types.ts`; implemented for `BinanceFuturesBroker`, not
+  meaningful for `PaperBroker` since paper positions are ephemeral by construction). This is what
+  keeps "only one open position per strategy" true across a process restart, not just within one
+  continuous run — without it, a restart while a real position was open would make the runner think
+  it's flat and risk opening a second position on top of the one still sitting on the exchange. The
+  recovered position's fee/margin/entry-time bookkeeping is necessarily approximate (a position-risk
+  query returns current state, not the original order's details).
+- **Adding a new strategy**: write its `StrategyAlgorithm` class (see `apps/engine/src/strategy/`
+  for examples — `movingAverageCross.ts` is the simplest, `btcHighRisk.ts` the most complete), add a
+  `getOrCreateDoc`/`start` entry to the `catalog` array in `index.ts`'s `main()`, and deploy. It
+  appears in Mongo and the dashboard **disabled** the first time the engine sees it — nothing trades
+  until it's explicitly enabled from the dashboard. There's no separate "staging" concept beyond
+  that: `enabled: false` plus the existing `lifecycleState: "draft"`/`"backtested"` convention is
+  the staging area.
 
 ### Mongo collections (introduced in Phase 1)
 

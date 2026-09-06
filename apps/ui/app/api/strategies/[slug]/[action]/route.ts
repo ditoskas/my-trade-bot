@@ -1,6 +1,6 @@
 import { ControlApiClient, type ControlApiAction } from "@trade-bot/shared";
 
-const ALLOWED_ACTIONS = new Set<ControlApiAction>(["pause", "resume", "kill", "unkill"]);
+const ALLOWED_ACTIONS = new Set<ControlApiAction>(["pause", "resume", "kill", "unkill", "enable", "disable"]);
 
 const client = new ControlApiClient({
   baseUrl: process.env.ENGINE_CONTROL_API_URL ?? "http://127.0.0.1:4001",
@@ -25,8 +25,8 @@ export async function POST(
   }
 
   try {
-    const ok = await client.runAction(slug, action as ControlApiAction);
-    return Response.json({ ok });
+    const result = await client.runAction(slug, action as ControlApiAction);
+    return Response.json(result);
   } catch (error) {
     return Response.json({ error: `couldn't reach the engine: ${(error as Error).message}` }, { status: 502 });
   }

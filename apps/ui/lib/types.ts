@@ -14,6 +14,10 @@ export interface StrategySummary {
   allocatedCapital: string;
   allocatedCapitalAsset: string;
   maxLeverage: number;
+  // Whether the engine currently runs this strategy's runner/market-data
+  // connections at all — distinct from lifecycleState/killSwitchEngaged
+  // (see the Strategy model's `enabled` field comment).
+  enabled: boolean;
 }
 
 export interface TradeSummary {

@@ -66,6 +66,64 @@ export class StrategyRunner {
     private readonly publisher?: EventPublisher,
   ) {}
 
+  // Call once, right after construction and before the candle stream
+  // starts. Reconciles in-memory position state against the real exchange
+  // when the broker supports it (see Broker.getOpenPosition), instead of
+  // always assuming flat — the property this restores is enterPosition's
+  // `!this.openPosition` guard (and therefore "only one open position per
+  // strategy") staying true across a process restart, not just within one
+  // continuous run. PaperBroker doesn't implement getOpenPosition, so this
+  // is a no-op for paper strategies — nothing to recover, positions are
+  // ephemeral there by construction.
+  //
+  // The recovered position's fee/margin/entry-time bookkeeping is
+  // necessarily approximate: a position-risk query returns current state,
+  // not the original order's details, which aren't recoverable this way.
+  async initialize(): Promise<void> {
+    if (!this.broker.getOpenPosition) {
+      return;
+    }
+    const symbol = this.strategyDoc.symbols[0];
+    const real = await this.broker.getOpenPosition(symbol);
+    if (!real) {
+      return;
+    }
+
+    console.warn(
+      `[strategy:${this.strategyDoc.slug}] found a real open ${real.side} position on the exchange at startup ` +
+        `(qty ${real.quantity.toString()} @ ${real.entryPrice.toString()}) — recovering it so a new entry can't ` +
+        `stack on top of it.`,
+    );
+
+    const entryPrice = toDecimalJs(real.entryPrice);
+    const quantity = toDecimalJs(real.quantity);
+    const leverage = this.strategyDoc.riskLimits.maxLeverage;
+    this.openPosition = {
+      side: real.side,
+      quantity,
+      entryPrice,
+      marginReserved: leverage > 0 ? quantity.mul(entryPrice).div(leverage) : quantity.mul(entryPrice),
+      entryFee: new Decimal(0),
+      entryOrderId: new ObjectId(),
+      entryTime: new Date(),
+    };
+
+    await this.audit("POSITION_RECOVERED", {
+      side: real.side,
+      quantity: real.quantity.toString(),
+      entryPrice: real.entryPrice.toString(),
+    });
+  }
+
+  // Used by the dashboard's disable control — refuses to tear down a
+  // strategy's runner while it holds a real position, since stopping the
+  // stream/runner would abandon that position's exit management entirely
+  // (no more stop checks, no more reversal signals) with nothing left
+  // watching it.
+  hasOpenPosition(): boolean {
+    return this.openPosition !== null;
+  }
+
   async onCandle(candle: Candle): Promise<void> {
     const positionState: StrategyPositionState = {
       isOpen: this.openPosition !== null,

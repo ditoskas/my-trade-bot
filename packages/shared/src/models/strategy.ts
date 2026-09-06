@@ -47,6 +47,16 @@ export interface Strategy {
   allocatedCapitalAsset: string;
   riskLimits: RiskLimits;
   config: Record<string, unknown>;
+  // Whether the engine should even instantiate this strategy's runner and
+  // market-data connections at all — orthogonal to lifecycleState, which
+  // represents capital-promotion stage (draft -> ... -> live_full), not
+  // "is this thread of execution running." Defaults to false for any
+  // strategy the engine hasn't seen before (see index.ts's catalog
+  // seeding), so a fresh deployment starts with everything off and
+  // nothing trades until explicitly enabled via the dashboard. A disabled
+  // strategy still exists as a row in this collection (for the UI to
+  // show an Enable button) — disabling never deletes the document.
+  enabled: boolean;
   killSwitchEngaged: boolean;
   createdAt: Date;
   updatedAt: Date;

@@ -2,7 +2,7 @@ import { UMFutures } from "@binance/futures-connector";
 import { Decimal } from "decimal.js";
 import { fromDecimalJs, toDecimal128, toDecimalJs, type MarginMode } from "@trade-bot/shared";
 import { mapOrderStatus } from "./orderStatus";
-import type { Broker, OrderResult, PlaceOrderRequest } from "./types";
+import type { Broker, OpenPositionInfo, OrderResult, PlaceOrderRequest } from "./types";
 
 export interface BinanceFuturesBrokerOptions {
   apiKey: string;
@@ -87,6 +87,31 @@ export class BinanceFuturesBroker implements Broker {
       }
     }
     await this.client.changeInitialLeverage(symbol, leverage);
+  }
+
+  // Real exchange truth, not Mongo/in-memory state — see the Broker
+  // interface comment on why this exists. One-way position mode only
+  // (matches configureOneWayPositionMode), so there's at most one position
+  // per symbol to find; positionAmt is signed (positive = long, negative =
+  // short, "0" = flat).
+  async getOpenPosition(symbol: string): Promise<OpenPositionInfo | null> {
+    const response = await this.client.getPositionInformationV3({ symbol });
+    const positions = Array.isArray(response.data) ? response.data.map(asRecord) : [];
+    const position = positions.find((entry) => entry["symbol"] === symbol);
+    if (!position) {
+      return null;
+    }
+
+    const positionAmt = new Decimal(readString(position, "positionAmt") ?? "0");
+    if (positionAmt.isZero()) {
+      return null;
+    }
+
+    return {
+      side: positionAmt.isPositive() ? "LONG" : "SHORT",
+      quantity: toDecimal128(positionAmt.abs().toString()),
+      entryPrice: toDecimal128(readString(position, "entryPrice") ?? "0"),
+    };
   }
 
   async placeOrder(request: PlaceOrderRequest): Promise<OrderResult> {

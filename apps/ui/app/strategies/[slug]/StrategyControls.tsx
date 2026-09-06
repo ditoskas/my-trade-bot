@@ -14,24 +14,37 @@ interface Props {
   slug: string;
   initialLifecycleState: string;
   initialKillSwitchEngaged: boolean;
+  initialEnabled: boolean;
 }
 
 const ARM_TIMEOUT_MS = 4000;
 
-// Kill switch + pause/resume, and a live trade-log refresh: rather than
-// duplicating trade/stats computation on the client, this just calls
-// router.refresh() whenever an ORDER_FILLED event for this strategy
-// arrives over SSE — the server component re-fetches from Mongo and the
-// page updates with the new trade already computed into the stats.
+// Kill switch + pause/resume + enable/disable, and a live trade-log
+// refresh: rather than duplicating trade/stats computation on the client,
+// this just calls router.refresh() whenever an ORDER_FILLED event for
+// this strategy arrives over SSE — the server component re-fetches from
+// Mongo and the page updates with the new trade already computed into
+// the stats.
+//
+// enabled is distinct from lifecycleState/killSwitchEngaged: a disabled
+// strategy has no runner in the engine at all (see
+// packages/shared/src/models/strategy.ts's `enabled` field comment), so
+// pause/resume/kill/unkill would just fail against it — only Enable makes
+// sense until it's running.
 //
 // The kill switch uses an arm-then-confirm click pattern rather than
 // window.confirm() — a native dialog blocks the page's own event loop
 // (including this component's SSE listener) for as long as it's open,
-// which is the wrong trade-off for a live trading control.
-export function StrategyControls({ slug, initialLifecycleState, initialKillSwitchEngaged }: Props) {
+// which is the wrong trade-off for a live trading control. Enable/Disable
+// don't need that same treatment: enabling just starts monitoring
+// (matches Resume's risk level), and disabling is already refused
+// server-side whenever a real position is open, so there's no
+// "accidentally abandon a position" click to guard against here.
+export function StrategyControls({ slug, initialLifecycleState, initialKillSwitchEngaged, initialEnabled }: Props) {
   const router = useRouter();
   const [lifecycleState, setLifecycleState] = useState(initialLifecycleState);
   const [killSwitchEngaged, setKillSwitchEngaged] = useState(initialKillSwitchEngaged);
+  const [enabled, setEnabled] = useState(initialEnabled);
   const [pending, setPending] = useState<string | null>(null);
   const [armed, setArmed] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -62,6 +75,9 @@ export function StrategyControls({ slug, initialLifecycleState, initialKillSwitc
       if (typeof message.payload.killSwitchEngaged === "boolean") {
         setKillSwitchEngaged(message.payload.killSwitchEngaged);
       }
+      if (typeof message.payload.enabled === "boolean") {
+        setEnabled(message.payload.enabled);
+      }
       if (message.type === "ORDER_FILLED") {
         router.refresh();
       }
@@ -72,7 +88,7 @@ export function StrategyControls({ slug, initialLifecycleState, initialKillSwitc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slug]);
 
-  async function callAction(action: "pause" | "resume" | "kill" | "unkill"): Promise<void> {
+  async function callAction(action: "pause" | "resume" | "kill" | "unkill" | "enable" | "disable"): Promise<void> {
     setPending(action);
     setErrorMessage(null);
     try {
@@ -86,6 +102,8 @@ export function StrategyControls({ slug, initialLifecycleState, initialKillSwitc
       if (action === "resume") setLifecycleState("paper");
       if (action === "kill") setKillSwitchEngaged(true);
       if (action === "unkill") setKillSwitchEngaged(false);
+      if (action === "enable") setEnabled(true);
+      if (action === "disable") setEnabled(false);
     } catch (error) {
       setErrorMessage(`Couldn't reach the control API: ${(error as Error).message}`);
     } finally {
@@ -95,6 +113,23 @@ export function StrategyControls({ slug, initialLifecycleState, initialKillSwitc
 
   const buttonClass =
     "rounded-md border px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50";
+
+  if (!enabled) {
+    return (
+      <div className="flex shrink-0 flex-col items-end gap-2">
+        <div className="text-xs text-zinc-400 dark:text-zinc-500">off — not running in the engine</div>
+        {errorMessage && <div className="max-w-xs text-right text-xs text-red-500">{errorMessage}</div>}
+        <button
+          type="button"
+          disabled={pending !== null}
+          onClick={() => void callAction("enable")}
+          className={`${buttonClass} border-emerald-300 text-emerald-700 hover:bg-emerald-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950`}
+        >
+          {pending === "enable" ? "Enabling…" : "Enable"}
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex shrink-0 flex-col items-end gap-2">
@@ -152,6 +187,14 @@ export function StrategyControls({ slug, initialLifecycleState, initialKillSwitc
             {pending === "kill" ? "Engaging…" : armed ? "Click again to confirm" : "Kill switch"}
           </button>
         )}
+        <button
+          type="button"
+          disabled={pending !== null}
+          onClick={() => void callAction("disable")}
+          className={`${buttonClass} border-zinc-300 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800`}
+        >
+          {pending === "disable" ? "Disabling…" : "Disable"}
+        </button>
       </div>
     </div>
   );

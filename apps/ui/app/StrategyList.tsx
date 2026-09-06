@@ -7,6 +7,7 @@ import type { StrategySummary } from "@/lib/types";
 interface LiveState {
   lifecycleState?: string;
   killSwitchEngaged?: boolean;
+  enabled?: boolean;
   lastEventType?: string;
   lastEventAt?: string;
 }
@@ -39,6 +40,8 @@ function StateBadge({ state }: { state: string }) {
 export function StrategyList({ initialStrategies }: { initialStrategies: StrategySummary[] }) {
   const [live, setLive] = useState<Record<string, LiveState>>({});
   const [connected, setConnected] = useState(false);
+  const [pendingSlug, setPendingSlug] = useState<string | null>(null);
+  const [errorSlug, setErrorSlug] = useState<{ slug: string; message: string } | null>(null);
 
   useEffect(() => {
     const source = new EventSource("/api/stream");
@@ -61,11 +64,14 @@ export function StrategyList({ initialStrategies }: { initialStrategies: Strateg
           typeof message.payload.killSwitchEngaged === "boolean"
             ? message.payload.killSwitchEngaged
             : previousEntry?.killSwitchEngaged;
+        const nextEnabled =
+          typeof message.payload.enabled === "boolean" ? message.payload.enabled : previousEntry?.enabled;
         return {
           ...prev,
           [message.strategySlug]: {
             lifecycleState: nextLifecycleState,
             killSwitchEngaged: nextKillSwitchEngaged,
+            enabled: nextEnabled,
             lastEventType: message.type,
             lastEventAt: message.timestamp,
           },
@@ -74,6 +80,24 @@ export function StrategyList({ initialStrategies }: { initialStrategies: Strateg
     };
     return () => source.close();
   }, []);
+
+  async function enableStrategy(slug: string): Promise<void> {
+    setPendingSlug(slug);
+    setErrorSlug(null);
+    try {
+      const response = await fetch(`/api/strategies/${slug}/enable`, { method: "POST" });
+      const body = (await response.json()) as { ok?: boolean; error?: string };
+      if (!body.ok) {
+        setErrorSlug({ slug, message: body.error ?? "couldn't enable" });
+        return;
+      }
+      setLive((prev) => ({ ...prev, [slug]: { ...prev[slug], enabled: true } }));
+    } catch (error) {
+      setErrorSlug({ slug, message: (error as Error).message });
+    } finally {
+      setPendingSlug(null);
+    }
+  }
 
   return (
     <div className="mt-6">
@@ -87,6 +111,7 @@ export function StrategyList({ initialStrategies }: { initialStrategies: Strateg
             <tr>
               <th className="px-4 py-3">Strategy</th>
               <th className="px-4 py-3">Symbols</th>
+              <th className="px-4 py-3">Enabled</th>
               <th className="px-4 py-3">State</th>
               <th className="px-4 py-3">Kill switch</th>
               <th className="px-4 py-3">Leverage</th>
@@ -98,6 +123,7 @@ export function StrategyList({ initialStrategies }: { initialStrategies: Strateg
               const overlay = live[strategy.slug];
               const lifecycleState = overlay?.lifecycleState ?? strategy.lifecycleState;
               const killSwitchEngaged = overlay?.killSwitchEngaged ?? strategy.killSwitchEngaged;
+              const enabled = overlay?.enabled ?? strategy.enabled;
               return (
                 <tr key={strategy.slug} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50">
                   <td className="px-4 py-3">
@@ -110,6 +136,27 @@ export function StrategyList({ initialStrategies }: { initialStrategies: Strateg
                     <div className="text-xs text-zinc-500 dark:text-zinc-400">{strategy.broker}</div>
                   </td>
                   <td className="px-4 py-3">{strategy.symbols.join(", ")}</td>
+                  <td className="px-4 py-3">
+                    {enabled ? (
+                      <span className="rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400">
+                        on
+                      </span>
+                    ) : (
+                      <div className="flex flex-col items-start gap-1">
+                        <button
+                          type="button"
+                          disabled={pendingSlug === strategy.slug}
+                          onClick={() => void enableStrategy(strategy.slug)}
+                          className="rounded-md border border-emerald-300 px-2 py-0.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-800 dark:text-emerald-400 dark:hover:bg-emerald-950"
+                        >
+                          {pendingSlug === strategy.slug ? "Enabling…" : "Enable"}
+                        </button>
+                        {errorSlug?.slug === strategy.slug && (
+                          <span className="text-xs text-red-500">{errorSlug.message}</span>
+                        )}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <StateBadge state={lifecycleState} />
                   </td>
