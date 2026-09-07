@@ -1,11 +1,12 @@
 # EMA Crossover
 
-**Status:** draft — the original 20x/30%-margin, no-filter version lost
-94% of equity, and a 5x/10%-margin/100-EMA-filter version cut that to a
-~16% loss but barely reduced whipsaw trades (see "Backtest results
-(pre-fix)" and "(post-fix, 100-EMA)" below). The trend filter length has
-since been dropped to 50 to react faster to chop — **not yet re-tested**.
-Don't treat the current version as validated until it's been run again.
+**Status:** backtested — the original 20x/30%-margin, no-filter version
+lost 94% of equity; the current 5x/10%-margin/100-EMA-filter version cut
+that to a ~16% loss (see "Backtest results (pre-fix)" and
+"(post-fix, 100-EMA)" below), still without a validated edge. A 50-period
+trend filter was tried and made things worse (~-31%, see "Backtest
+results (50-EMA trend filter)") — reverted back to 100. Next lever being
+tried is the fast/slow crossover pair itself, not the trend filter.
 
 ## Overview
 
@@ -41,13 +42,15 @@ signals that go against the larger trend, on the theory that most of the
 damage came from taking *both* sides of a crossover pair inside a range
 rather than from any single bad signal.
 
-**Trend EMA length dropped from 100 to 50** after the post-fix backtest
-(see "Backtest results (post-fix, 100-EMA)" below): a 100-period filter
-barely changed trade count versus no filter at all (~150 → ~160), meaning
-it was too slow to reject much of anything — a 50-period trend EMA reacts
-faster to the same chop and should actually filter more of the
-whipsaw-prone signals, at the cost of also reducing trade frequency more
-than the 100-period version did.
+**Trend EMA length tested at 50, reverted back to 100** — see "Backtest
+results" below for both runs. The hypothesis going in was that a faster
+trend EMA would filter *more* whipsaw signals; the actual result was the
+opposite (~160 → ~220 trades, -16% → -31%). A 100-period EMA stays flat
+enough to represent the real underlying trend; a 50-period one tracks
+price too closely and moves with the same short-term noise the crossover
+itself reacts to, so it stops meaningfully disagreeing with the crossover
+and lets more whipsaw-prone signals through instead of fewer. Recorded
+here so this isn't re-tried without remembering why it made things worse.
 
 ## Stop loss logic
 
@@ -112,7 +115,7 @@ results below. No partial sizing, no scaling in/out.
 | Candle interval | 1h | chosen for trade-frequency target, not tested against alternatives yet |
 | Fast EMA length | 9 | starting default, not calibrated — see Next steps |
 | Slow EMA length | 21 | starting default, not calibrated — see Next steps |
-| Trend filter EMA length | 50 | dropped from 100 after the post-fix backtest barely changed trade count — see Entry logic |
+| Trend filter EMA length | 100 | tested at 50, reverted — 50 let *more* whipsaw trades through (~220 vs ~160) and performed worse (-31% vs -16%) — see Entry logic |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
 | Stop loss | 80% of margin | = 16% price move at 5x |
@@ -152,7 +155,7 @@ strategy(
 // ---- Inputs ----
 fastLen                = input.int(9, "Fast EMA length")
 slowLen                = input.int(21, "Slow EMA length")
-trendLen               = input.int(50, "Trend filter EMA length")
+trendLen               = input.int(100, "Trend filter EMA length")
 leverage               = input.float(5, "Leverage (see margin_long/short note above)", minval = 1, maxval = 20, step = 1)
 marginPct              = input.float(10, "Margin % of equity per trade")
 stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
@@ -281,6 +284,24 @@ the underlying whipsaw problem the trend filter was meant to reduce is
 still happening — it's just no longer being amplified into ruin by
 leverage. The trend filter changed the *survivability* of the strategy,
 not (yet) its *profitability*.
+
+## Backtest results (50-EMA trend filter — tried and rejected)
+
+Same window, same script, only `trendLen` changed from 100 to 50.
+
+| Metric | 100-EMA (kept) | 50-EMA (rejected) |
+|---|---|---|
+| Ending equity | ~838 | ~690 |
+| Total return | ~-16% | **~-31%** |
+| Entries | ~160 | **~220** |
+| Full flat-exits | 4 | 4 |
+
+Worse on every count. Diagnosis above (Entry logic section) — a faster
+trend EMA tracks price too closely to actually disagree with the
+crossover, so it filters less, not more. Reverted to 100. Don't re-try
+shortening this filter without a different mechanism (e.g. requiring the
+trend EMA to be sloping, not just price on one side of it) — plain length
+reduction moves in the wrong direction.
 
 ## Next steps
 
