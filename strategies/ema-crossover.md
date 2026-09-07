@@ -1,12 +1,14 @@
 # EMA Crossover
 
-**Status:** backtested — first genuinely profitable result in this
-strategy's history: **+30.5%** (previously best was -6.2%), profit
-factor 1.48. Two changes were made together (ADX replacing the 100-EMA
-trend filter, and a minimum hold period before a reversal can close a
-position) — see "Backtest results (ADX + minimum hold)" below for the
-numbers and the honest caveats (same test window, two changes combined,
-lower trade frequency) before treating this as validated.
+**Status:** backtested — best result found: **ADX filter alone, no
+minimum hold: +67.4%, profit factor 2.16.** Isolating the two changes
+combined in the previous version showed the minimum-hold addition was
+actually *hurting* results once ADX was already filtering well (ADX+hold
+together: +30.5%; ADX alone: +67.4%) — a real, clean finding from
+isolation testing, not a guess. `minHoldBars` defaults to 1 (disabled)
+below. See "Backtest results (ADX alone — best so far)" for the full
+comparison and honest caveats (same test window, no out-of-sample check
+yet) before treating this as validated.
 
 ## Overview
 
@@ -108,26 +110,22 @@ bar-by-bar trail.
 A position closes on whichever of these fires first:
 1. The 4%-price stop loss (80% margin loss), or
 2. The trailing stop after the 100%-margin-profit activation point, or
-3. **An opposite-direction EMA crossover, but only once the position has
-   been held at least `minHoldBars` (default 5) bars** — this closes
-   (and immediately reverses into) the position. Only one position open
-   at a time, same convention as every other strategy in this project — a
-   reversal signal doesn't stack a second position on top of the first.
+3. **An opposite-direction EMA crossover** — this closes (and immediately
+   reverses into) the position. Only one position open at a time, same
+   convention as every other strategy in this project — a reversal
+   signal doesn't stack a second position on top of the first.
 
-**Minimum hold period added** after per-trade diagnostic logging showed
-95% of trades (155/159) closed via reversal, averaging a small loss each,
-while the rare trades that ran long enough to reach the trailing stop
-averaged a large gain (n=4, too small to trust alone, but suggestive).
-That points at a structural problem the entry-side filters (trend, gap)
-can't fix: the reversal exit can cut a trade before the trailing-stop
-mechanism — the part of this strategy actually designed to let winners
-run — ever gets a chance to engage. A crossover that reverses again
-within `minHoldBars` bars of the current position opening is now ignored
-(the position keeps riding under its existing stop/trail instead of
-flipping immediately); a reversal signal after that many bars still
-closes and flips as before. Untested — combined with the ADX swap in the
-same run, so if this backtest improves, a follow-up test should isolate
-which of the two changes actually did it.
+**A minimum-hold-before-reversal mechanism exists in the code
+(`minHoldBars`) but defaults to 1, which is effectively disabled** — it
+was added on the theory that letting trades "breathe" past a quick
+reversal would let more of them reach the trailing stop (see Diagnostic
+findings below, where the rare trades that did reach it averaged a large
+gain). Tested combined with the ADX filter (5-bar hold: +30.5%) and
+isolated from it (ADX alone: +67.4%) — **the minimum hold made things
+worse once ADX was already filtering out the weak crossovers**, not
+better. Kept in the code as a parameter (in case it's useful combined
+with a different filter later) but not used by default. See "Backtest
+results (ADX alone — best so far)" for the isolation numbers.
 
 ## Position sizing
 
@@ -163,7 +161,7 @@ results below. No partial sizing, no scaling in/out.
 | ADX smoothing | 14 | new — standard default, not calibrated |
 | Min ADX (trend strength) | 20 | new — lenient starting threshold, not calibrated |
 | Max crossover gap (% of price) | 0.06 | evidence-backed (per-trade diagnostic) — kept from the prior version |
-| Minimum bars held before reversal | 5 | new — arbitrary starting default (5 hours on the 1h chart), not calibrated |
+| Minimum bars held before reversal | 1 (disabled) | tested at 5, combined with ADX it performed *worse* than ADX alone (+30.5% vs +67.4%) — see Exit rules |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
 | Stop loss | 80% of margin | = 16% price move at 5x |
@@ -212,7 +210,7 @@ stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
 trailActivateMarginPct = input.float(100, "Trailing-stop activation: % of margin gained")
 trailOffsetMarginPct   = input.float(20, "Trailing-stop offset: % of margin given back")
 maxGapPct              = input.float(0.06, "Max fast/slow gap at cross (% of price)")
-minHoldBars            = input.int(5, "Minimum bars held before a reversal can close position")
+minHoldBars            = input.int(1, "Minimum bars held before a reversal can close position (1 = disabled - tested at 5, performed worse, see Exit rules)")
 
 fastEMA = ta.ema(close, fastLen)
 slowEMA = ta.ema(close, slowLen)
@@ -519,11 +517,44 @@ roughly breakeven.
   real risk of being overfit to this particular period's price action,
   regardless of how mechanically reasonable each individual change is.
 
-## Cross-timeframe check (same config, different chart interval)
+## Backtest results (ADX alone, no minimum hold — best so far)
+
+Same window, same script, `minHoldBars` set to 1 (disabled) to isolate
+the ADX filter's effect from the minimum-hold change tested together
+above.
+
+| Metric | Gap filter only | ADX + 5-bar hold | **ADX alone** |
+|---|---|---|---|
+| Ending equity | ~938 | ~1305 | **~1674** |
+| Total return | ~-6.2% | +30.5% | **+67.4%** |
+| Trades | 104 | 64 | 75 |
+| Win rate | 32.7% | 35.9% | 34.7% |
+| Profit factor | 0.91 | 1.48 | **2.16** |
+| Avg PnL, reversal exits | — | -0.59 | **+4.23** |
+| Avg PnL, stop/trail exits | — | +68 (n=5) | +75.62 (n=5) |
+
+**Clean, important finding from isolation testing**: the minimum-hold
+change was not neutral — it actively made things worse once ADX was
+already doing the filtering. With ADX alone, reversal exits (still 70 of
+75 trades) average a small *gain* (+4.23), not a small loss — the ADX
+filter alone is apparently good enough at picking crossovers that even
+the "premature" reversal exits tend to be net positive, and forcing
+trades to hold longer past a reversal signal (as the minimum-hold change
+did) was overriding a signal that was often *right*, not just noise.
+This is now the best-performing config found across every version
+tested. `minHoldBars` defaults to 1 (disabled) as of this result.
+
+**Same caveats still apply**: single 8-month window, no out-of-sample
+check yet, and the cross-timeframe check below was run against the older
+ADX+minimum-hold version, not this one — worth re-running on 30m/4h with
+minimum-hold disabled before trusting those numbers too.
+
+## Cross-timeframe check (same config, different chart interval — ADX+minhold version, superseded)
 
 Same script/parameters (9/21 EMA, ADX≥20, gap≤0.06%, 5-bar min-hold),
 tried on other timeframes to see if the +30.5% result was timeframe-
-specific.
+specific. **Run against the older ADX+minimum-hold config, not the
+current best (ADX alone) — worth re-checking with minHoldBars=1.**
 
 | Timeframe | Return |
 |---|---|
@@ -542,18 +573,19 @@ this is ever generalized beyond the 1h chart it was tuned on.
 
 ## Next steps
 
-1. **Isolate which change (ADX or minimum hold) drove the improvement** —
-   test ADX alone (revert minHoldBars to a no-op, e.g. 1) and minimum
-   hold alone (revert to the 100-EMA trend filter) as two separate runs
-   before crediting either one specifically.
+1. **Re-run the cross-timeframe check (30m/4h) with `minHoldBars=1`** —
+   the existing 30m/-7.9%/4h/+9% numbers above are from the older,
+   now-superseded ADX+minimum-hold config. ADX alone might generalize
+   better or worse across timeframes; currently unknown.
 2. **Test on a different time window or symbol** before trusting this
    result — every version of this strategy has been tuned against the
    same Jan–Sep 2026 DOGEUSDT.P data, which is the single biggest
    remaining risk to everything found so far.
 3. **Decide deliberately whether the frequency trade-off is acceptable** —
-   64 trades/8 months is a real departure from the original ~1/day goal
-   that started this whole strategy; if frequency matters independently
-   of profitability, this needs a conscious call, not silent acceptance.
+   75 trades/8 months (~1 every 3.3 days) is a real departure from the
+   original ~1/day goal that started this whole strategy; if frequency
+   matters independently of profitability, this needs a conscious call,
+   not silent acceptance.
 4. Only after 1-3 above: consider whether this is ready for the diagnostic-
    free finalized script, then paper trading — not before.
 
