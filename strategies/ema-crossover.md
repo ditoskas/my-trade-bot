@@ -1,14 +1,11 @@
 # EMA Crossover
 
-**Status:** draft — per-trade diagnostic logging (159 closed trades)
-found a real, actionable signal instead of another blind parameter guess:
-trades where the fast/slow EMA gap was already wide *at the moment of the
-cross* lost far more on average than tight-gap crosses (a wide gap means
-the cross fired late, after the move had already run). A gap filter has
-been added on that basis — **not yet tested**. See "Diagnostic findings
-(per-trade PnL)" below for the full breakdown, including two other
-patterns found but not yet acted on (direction asymmetry, trend-filter
-distance).
+**Status:** backtested — the gap filter (added from per-trade diagnostic
+evidence, see below) improved the result from ~-16% to **~-6.2%**, and
+profit factor from 0.81 to 0.91. Still a net loss, not a validated edge,
+but the best result found across every version tested, and the first
+improvement to come from evidence rather than a length guess. See
+"Backtest results (gap filter)" below.
 
 ## Overview
 
@@ -411,17 +408,41 @@ distance from the trend EMA (21% → 49% across terciles) but average PnL
 didn't improve cleanly alongside it, so this wasn't as clean or
 trustworthy a lever as the gap-size finding.
 
+## Backtest results (gap filter added — best result so far)
+
+Same window, same script, `maxGapPct = 0.06` added on top of the 9/21/100
+config. Parsed the same way (grep/awk over the downloaded log).
+
+| Metric | No gap filter | With gap filter |
+|---|---|---|
+| Ending equity | ~838 | **~938** |
+| Total return | ~-16% | **~-6.2%** |
+| Trades | 159 | 104 (-35%) |
+| Win rate | 35.2% | 32.7% |
+| Profit factor | 0.81 | **0.91** |
+
+Real improvement on every profitability metric, though trade count
+dropped more than the in-sample tercile math implied it would (removing
+crosses reshuffles which reversals happen at all downstream, not just
+which ones are removed — expected, not a red flag). Frequency is now
+~1 trade per 2.4 days, a bit below the original 1/day target but still
+reasonable. **Still net negative** — this is progress, not a finished
+strategy. This backtest is on the *same* window the filter was derived
+from, so some of the improvement could be curve-fit to this specific
+8 months rather than a durable effect — worth keeping in mind before
+trusting the magnitude, even though the *direction* (tight gaps beat wide
+gaps) has a real mechanical explanation (late cross = already-run move),
+not just a statistical artifact.
+
 ## Next steps
 
-1. **Test the gap filter live** — this is the first change in this
-   strategy's history driven by real per-trade evidence rather than a
-   length guess. Re-run the diagnostic script (now with `maxGapPct`
-   added) and check whether excluding wide-gap crosses actually improves
-   the aggregate result, not just the historical subset it was derived
-   from — the terciles above are in-sample by construction.
-2. **If the gap filter helps, consider testing the direction asymmetry
+1. **This is progress, not a finished strategy — PF is 0.91, still <1.**
+   Before declaring the gap filter validated, ideally test it against a
+   different time window or symbol to check it's not fit to this
+   specific 8-month period.
+2. **If the gap filter holds up, consider testing the direction asymmetry
    next, but on a different time window first** — the long/short split
-   found above is confounded with this specific 8-month downtrend and
+   found earlier is confounded with this specific 8-month downtrend and
    needs out-of-sample confirmation before being turned into a rule.
 3. **Stop tuning EMA lengths blind — every attempt after the leverage fix
    has made things worse.** Two independent directions (shorter filter,
