@@ -1,12 +1,12 @@
 # EMA Crossover
 
-**Status:** backtested — the original 20x/30%-margin, no-filter version
-lost 94% of equity; the current 5x/10%-margin/100-EMA-filter version cut
-that to a ~16% loss (see "Backtest results (pre-fix)" and
-"(post-fix, 100-EMA)" below), still without a validated edge. A 50-period
-trend filter was tried and made things worse (~-31%, see "Backtest
-results (50-EMA trend filter)") — reverted back to 100. Next lever being
-tried is the fast/slow crossover pair itself, not the trend filter.
+**Status:** draft — the original 20x/30%-margin, no-filter version lost
+94% of equity; 5x/10%-margin/100-EMA-filter cut that to ~16% loss; a
+50-period trend filter made things worse (~-31%) and was reverted (see
+Backtest results below for all three). The fast/slow crossover pair has
+now been widened from 9/21 to 20/50, on the theory that a slower signal
+itself (not just the trend filter) reacts less to short-term noise —
+**not yet tested**.
 
 ## Overview
 
@@ -33,6 +33,12 @@ Bidirectional, on the 1h candle close:
   trendEMA`).
 - **Short**: fast EMA crosses below slow EMA (`ta.crossunder(fastEMA,
   slowEMA)`) **and** price is below the trend EMA (`close < trendEMA`).
+
+**Fast/slow lengths widened from 9/21 to 20/50** after the trend-filter
+experiments above: shortening the *filter* made things worse because a
+faster average reacts to the same noise the crossover already reacts to.
+The next lever is applying that same "slower = less noise-reactive" logic
+to the crossover signal itself, not just the filter — untested so far.
 
 **Added after the pre-fix backtest** (see Backtest results below): the
 original version had no regime filter at all and whipsawed heavily during
@@ -113,8 +119,8 @@ results below. No partial sizing, no scaling in/out.
 |---|---|---|
 | Symbol | DOGEUSDT.P | |
 | Candle interval | 1h | chosen for trade-frequency target, not tested against alternatives yet |
-| Fast EMA length | 9 | starting default, not calibrated — see Next steps |
-| Slow EMA length | 21 | starting default, not calibrated — see Next steps |
+| Fast EMA length | 20 | widened from 9 — see Entry logic; not yet tested |
+| Slow EMA length | 50 | widened from 21 — see Entry logic; not yet tested |
 | Trend filter EMA length | 100 | tested at 50, reverted — 50 let *more* whipsaw trades through (~220 vs ~160) and performed worse (-31% vs -16%) — see Entry logic |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
@@ -153,8 +159,8 @@ strategy(
      process_orders_on_close = true)
 
 // ---- Inputs ----
-fastLen                = input.int(9, "Fast EMA length")
-slowLen                = input.int(21, "Slow EMA length")
+fastLen                = input.int(20, "Fast EMA length")
+slowLen                = input.int(50, "Slow EMA length")
 trendLen               = input.int(100, "Trend filter EMA length")
 leverage               = input.float(5, "Leverage (see margin_long/short note above)", minval = 1, maxval = 20, step = 1)
 marginPct              = input.float(10, "Margin % of equity per trade")
