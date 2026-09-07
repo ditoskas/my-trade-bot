@@ -1,11 +1,12 @@
 # EMA Crossover
 
-**Status:** backtested — the gap filter (added from per-trade diagnostic
-evidence, see below) improved the result from ~-16% to **~-6.2%**, and
-profit factor from 0.81 to 0.91. Still a net loss, not a validated edge,
-but the best result found across every version tested, and the first
-improvement to come from evidence rather than a length guess. See
-"Backtest results (gap filter)" below.
+**Status:** draft — the 100-EMA trend filter has been replaced with an
+ADX trend-strength filter (see Entry logic), on the theory that "which
+side of a slow average is price on" is a weaker trend signal than
+"is a real trend actually underway at all," which is what ADX measures
+directly. The EMA-filter version's best result (~-6.2% with the gap
+filter, see "Backtest results (gap filter)" below) is kept for
+comparison. **ADX version not yet tested.**
 
 ## Overview
 
@@ -28,22 +29,30 @@ target.
 Bidirectional, on the 1h candle close:
 
 - **Long**: fast EMA crosses above slow EMA (`ta.crossover(fastEMA,
-  slowEMA)`) **and** price is above the longer-term trend EMA (`close >
-  trendEMA`) **and** the fast/slow gap at the cross isn't too wide (see
-  the gap filter below).
+  slowEMA)`) **and** ADX confirms a real trend (`adxVal >=
+  adxThreshold`) **and** the fast/slow gap at the cross isn't too wide
+  (see the gap filter below).
 - **Short**: fast EMA crosses below slow EMA (`ta.crossunder(fastEMA,
-  slowEMA)`) **and** price is below the trend EMA (`close < trendEMA`)
-  **and** the same gap filter.
+  slowEMA)`) **and** the same ADX and gap conditions.
 
-**Crossover gap filter added** after per-trade diagnostic logging (see
+**Trend filter switched from a 100-EMA to ADX.** The EMA version
+("is price on the trend side of a slow average") had weak, inconsistent
+correlation with trade PnL despite some win-rate effect (see Diagnostic
+findings below). ADX measures trend *strength* directly rather than just
+which side of a line price sits on, which is closer to what's actually
+needed here — reject crossovers that fire during genuinely flat/choppy
+conditions, not just ones on the "wrong side" of an average that itself
+may be flat. Untested — replacing rather than combining with the EMA
+filter specifically so any change in result can be attributed to this
+swap alone, not a combination of two filters.
+
+**Crossover gap filter kept** — after per-trade diagnostic logging (see
 Diagnostic findings below) found that a wide fast/slow EMA separation *at
 the moment of the cross* predicted worse trades — `gapPct =
 |fastEMA - slowEMA| / close * 100` in the worst third of observed trades
 (≥ ~0.06%) averaged -4.80 pnl, versus +0.87 for the better two-thirds.
-Entries now require `gapPct <= maxGapPct` (default 0.06). This is the
-first change in this strategy's history driven by real per-trade
-evidence rather than a length guess — see the diagnostic section for why
-it's trusted more than the earlier attempts.
+Entries still require `gapPct <= maxGapPct` (default 0.06) — this part is
+unchanged and already evidence-backed.
 
 **Fast/slow lengths tested at 20/50, reverted back to 9/21** — see
 "Backtest results (20/50 crossover — tried and rejected)" below. Widening
@@ -99,11 +108,26 @@ bar-by-bar trail.
 A position closes on whichever of these fires first:
 1. The 4%-price stop loss (80% margin loss), or
 2. The trailing stop after the 100%-margin-profit activation point, or
-3. **An opposite-direction EMA crossover** — this closes (and immediately
-   reverses into) the position regardless of where price sits relative to
-   the stop/trail above. Only one position open at a time, same convention
-   as every other strategy in this project — a reversal signal doesn't
-   stack a second position on top of the first.
+3. **An opposite-direction EMA crossover, but only once the position has
+   been held at least `minHoldBars` (default 5) bars** — this closes
+   (and immediately reverses into) the position. Only one position open
+   at a time, same convention as every other strategy in this project — a
+   reversal signal doesn't stack a second position on top of the first.
+
+**Minimum hold period added** after per-trade diagnostic logging showed
+95% of trades (155/159) closed via reversal, averaging a small loss each,
+while the rare trades that ran long enough to reach the trailing stop
+averaged a large gain (n=4, too small to trust alone, but suggestive).
+That points at a structural problem the entry-side filters (trend, gap)
+can't fix: the reversal exit can cut a trade before the trailing-stop
+mechanism — the part of this strategy actually designed to let winners
+run — ever gets a chance to engage. A crossover that reverses again
+within `minHoldBars` bars of the current position opening is now ignored
+(the position keeps riding under its existing stop/trail instead of
+flipping immediately); a reversal signal after that many bars still
+closes and flips as before. Untested — combined with the ADX swap in the
+same run, so if this backtest improves, a follow-up test should isolate
+which of the two changes actually did it.
 
 ## Position sizing
 
@@ -134,8 +158,12 @@ results below. No partial sizing, no scaling in/out.
 | Candle interval | 1h | chosen for trade-frequency target, not tested against alternatives yet |
 | Fast EMA length | 9 | tested at 20, reverted — worse (-32% vs -16%) — see Entry logic |
 | Slow EMA length | 21 | tested at 50, reverted — worse (-32% vs -16%) — see Entry logic |
-| Trend filter EMA length | 100 | tested at 50, reverted — 50 let *more* whipsaw trades through (~220 vs ~160) and performed worse (-31% vs -16%) — see Entry logic |
-| Max crossover gap (% of price) | 0.06 | new — rejects late/wide-gap crosses per per-trade diagnostic findings, not yet backtested |
+| ~~Trend filter EMA length~~ | ~~100~~ | superseded by ADX below — kept in Backtest results for comparison |
+| ADX/DI length | 14 | new — standard default, not calibrated |
+| ADX smoothing | 14 | new — standard default, not calibrated |
+| Min ADX (trend strength) | 20 | new — lenient starting threshold, not calibrated |
+| Max crossover gap (% of price) | 0.06 | evidence-backed (per-trade diagnostic) — kept from the prior version |
+| Minimum bars held before reversal | 5 | new — arbitrary starting default (5 hours on the 1h chart), not calibrated |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
 | Stop loss | 80% of margin | = 16% price move at 5x |
@@ -175,28 +203,43 @@ strategy(
 // ---- Inputs ----
 fastLen                = input.int(9, "Fast EMA length")
 slowLen                = input.int(21, "Slow EMA length")
-trendLen               = input.int(100, "Trend filter EMA length")
+adxLen                 = input.int(14, "ADX/DI length")
+adxSmoothing           = input.int(14, "ADX smoothing")
+adxThreshold           = input.float(20, "Min ADX (trend strength)")
 leverage               = input.float(5, "Leverage (see margin_long/short note above)", minval = 1, maxval = 20, step = 1)
 marginPct              = input.float(10, "Margin % of equity per trade")
 stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
 trailActivateMarginPct = input.float(100, "Trailing-stop activation: % of margin gained")
 trailOffsetMarginPct   = input.float(20, "Trailing-stop offset: % of margin given back")
 maxGapPct              = input.float(0.06, "Max fast/slow gap at cross (% of price)")
+minHoldBars            = input.int(5, "Minimum bars held before a reversal can close position")
 
-fastEMA  = ta.ema(close, fastLen)
-slowEMA  = ta.ema(close, slowLen)
-trendEMA = ta.ema(close, trendLen)
-gapPct   = math.abs(fastEMA - slowEMA) / close * 100
+fastEMA = ta.ema(close, fastLen)
+slowEMA = ta.ema(close, slowLen)
+gapPct  = math.abs(fastEMA - slowEMA) / close * 100
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxSmoothing)
 
-// Trend filter (post-mortem #1): only take a crossover in the direction
-// of the larger trend, to cut the whipsaw-in-chop losses that drove the
-// pre-fix 94% drawdown (see Backtest results below).
-// Gap filter (post-mortem #2, evidence-based): per-trade diagnostic
-// logging showed a wide fast/slow gap at the moment of the cross predicts
-// a worse trade (the cross fired late, after the move already ran) - see
-// Diagnostic findings below.
-longSignal  = ta.crossover(fastEMA, slowEMA) and close > trendEMA and gapPct <= maxGapPct
-shortSignal = ta.crossunder(fastEMA, slowEMA) and close < trendEMA and gapPct <= maxGapPct
+// ---- Minimum-hold gate: lets an existing position ride out a too-quick
+// reversal instead of being cut before the trailing-stop mechanism ever
+// gets a chance to engage (per-trade diagnostics showed 95% of trades
+// closed via reversal, averaging a small loss, while the rare trades that
+// reached the trailing stop averaged a large gain) ----
+var int entryBarIndex = na
+barsHeld  = na(entryBarIndex) ? na : bar_index - entryBarIndex
+canReverse = na(entryBarIndex) or barsHeld >= minHoldBars
+
+// Raw crossover + ADX trend-strength filter (replaces the earlier 100-EMA
+// trend filter - ADX measures whether a real trend exists at all, not
+// just which side of a slow average price sits on) + the evidence-backed
+// gap filter (a wide fast/slow gap at the cross means it fired late,
+// after the move already ran).
+rawLongSignal  = ta.crossover(fastEMA, slowEMA) and adxVal >= adxThreshold and gapPct <= maxGapPct
+rawShortSignal = ta.crossunder(fastEMA, slowEMA) and adxVal >= adxThreshold and gapPct <= maxGapPct
+
+// Only gate the reversal case (opposite side currently open) - a fresh
+// entry from flat is never delayed by the minimum-hold rule.
+longSignal  = rawLongSignal and (strategy.position_size >= 0 or canReverse)
+shortSignal = rawShortSignal and (strategy.position_size <= 0 or canReverse)
 
 // ---- Position sizing: fixed % of equity as margin ----
 f_qty(entryClose) =>
@@ -219,6 +262,7 @@ if longSignal
     trailOffsetTicks   = (entryPrice * trailOffsetDistPct) / syminfo.mintick
     strategy.entry("Long", strategy.long, qty = f_qty(entryPrice))
     strategy.exit("Bracket-L", from_entry = "Long", stop = stopPrice, trail_price = trailActivatePrice, trail_offset = trailOffsetTicks)
+    entryBarIndex := bar_index
 
 if shortSignal
     entryPrice         = close
@@ -227,10 +271,11 @@ if shortSignal
     trailOffsetTicks   = (entryPrice * trailOffsetDistPct) / syminfo.mintick
     strategy.entry("Short", strategy.short, qty = f_qty(entryPrice))
     strategy.exit("Bracket-S", from_entry = "Short", stop = stopPrice, trail_price = trailActivatePrice, trail_offset = trailOffsetTicks)
+    entryBarIndex := bar_index
 
 plot(fastEMA, "Fast EMA", color = color.teal)
 plot(slowEMA, "Slow EMA", color = color.orange)
-plot(trendEMA, "Trend EMA", color = color.gray)
+plot(adxVal, "ADX", color = color.purple, display = display.data_window)
 ```
 
 ## Backtest notes
