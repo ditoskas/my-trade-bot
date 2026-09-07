@@ -519,6 +519,27 @@ roughly breakeven.
   real risk of being overfit to this particular period's price action,
   regardless of how mechanically reasonable each individual change is.
 
+## Cross-timeframe check (same config, different chart interval)
+
+Same script/parameters (9/21 EMA, ADX≥20, gap≤0.06%, 5-bar min-hold),
+tried on other timeframes to see if the +30.5% result was timeframe-
+specific.
+
+| Timeframe | Return |
+|---|---|
+| 30m | -7.9% |
+| **1h (primary)** | **+30.5%** |
+| 4h | +9% |
+
+Directionally consistent (both 30m and 4h didn't randomly swing wildly
+in either direction relative to 1h) rather than pure noise, which is a
+mildly reassuring sign. But 30m going negative is a real flag: 5 bars is
+a very different real-world duration depending on the chart —
+2.5 hours on 30m, 5 hours on 1h, 20 hours on 4h — so `minHoldBars` as a
+fixed *bar count* rather than a fixed *time duration* likely makes this
+config more timeframe-specific than intended. Worth keeping in mind if
+this is ever generalized beyond the 1h chart it was tuned on.
+
 ## Next steps
 
 1. **Isolate which change (ADX or minimum hold) drove the improvement** —
