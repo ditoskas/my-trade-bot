@@ -1,12 +1,12 @@
 # EMA Crossover
 
-**Status:** draft — the 100-EMA trend filter has been replaced with an
-ADX trend-strength filter (see Entry logic), on the theory that "which
-side of a slow average is price on" is a weaker trend signal than
-"is a real trend actually underway at all," which is what ADX measures
-directly. The EMA-filter version's best result (~-6.2% with the gap
-filter, see "Backtest results (gap filter)" below) is kept for
-comparison. **ADX version not yet tested.**
+**Status:** backtested — first genuinely profitable result in this
+strategy's history: **+30.5%** (previously best was -6.2%), profit
+factor 1.48. Two changes were made together (ADX replacing the 100-EMA
+trend filter, and a minimum hold period before a reversal can close a
+position) — see "Backtest results (ADX + minimum hold)" below for the
+numbers and the honest caveats (same test window, two changes combined,
+lower trade frequency) before treating this as validated.
 
 ## Overview
 
@@ -479,7 +479,65 @@ trusting the magnitude, even though the *direction* (tight gaps beat wide
 gaps) has a real mechanical explanation (late cross = already-run move),
 not just a statistical artifact.
 
+## Backtest results (ADX + minimum hold — first profitable result)
+
+Same window, gap filter kept, 100-EMA trend filter replaced with ADX
+(≥20), plus a 5-bar minimum hold before a reversal can close a position.
+Parsed the same way (grep/awk over the downloaded log).
+
+| Metric | Gap filter only | + ADX + min-hold |
+|---|---|---|
+| Ending equity | ~938 | **~1305** |
+| Total return | ~-6.2% | **+30.5%** |
+| Trades | 104 | 64 |
+| Win rate | 32.7% | 35.9% |
+| Profit factor | 0.91 | **1.48** |
+| Avg PnL, reversal exits | -0.59 (n=59) | closer to breakeven than every prior version |
+| Avg PnL, stop/trail exits | n/a | **+68 (n=5)** |
+
+First genuinely profitable configuration across every version tested in
+this strategy's history. The reason-breakdown confirms the theory that
+motivated the minimum-hold change: trades that survive long enough to
+reach the trailing stop are now a meaningful contributor (+68 avg on 5
+trades) rather than a near-nonexistent edge case, while reversal exits
+(still the majority, 59/64) moved from a clear loss on average to
+roughly breakeven.
+
+**Honest caveats before trusting this**:
+- **Frequency dropped further** — 64 trades over ~8 months is ~1 every
+  3.8 days, well below the original ~1/day-to-1/2-days target.
+  Profitability came partly at the cost of frequency; if trade frequency
+  matters as much as the original goal implied, this trade-off needs a
+  deliberate decision, not just acceptance.
+- **Two changes were combined** (ADX swap + minimum hold) at the user's
+  request — this result can't yet say which one did the work, or whether
+  they're both necessary together. Worth an isolated test of each before
+  fully trusting the combination.
+- **Still the same 8-month window** every other version was tested and
+  tuned against — none of this has been checked out-of-sample yet. A
+  design that's now been adjusted five times against the same data has a
+  real risk of being overfit to this particular period's price action,
+  regardless of how mechanically reasonable each individual change is.
+
 ## Next steps
+
+1. **Isolate which change (ADX or minimum hold) drove the improvement** —
+   test ADX alone (revert minHoldBars to a no-op, e.g. 1) and minimum
+   hold alone (revert to the 100-EMA trend filter) as two separate runs
+   before crediting either one specifically.
+2. **Test on a different time window or symbol** before trusting this
+   result — every version of this strategy has been tuned against the
+   same Jan–Sep 2026 DOGEUSDT.P data, which is the single biggest
+   remaining risk to everything found so far.
+3. **Decide deliberately whether the frequency trade-off is acceptable** —
+   64 trades/8 months is a real departure from the original ~1/day goal
+   that started this whole strategy; if frequency matters independently
+   of profitability, this needs a conscious call, not silent acceptance.
+4. Only after 1-3 above: consider whether this is ready for the diagnostic-
+   free finalized script, then paper trading — not before.
+
+<!-- Superseded next-steps from the gap-filter-only stage, kept for
+     history rather than deleted: -->
 
 1. **This is progress, not a finished strategy — PF is 0.91, still <1.**
    Before declaring the gap filter validated, ideally test it against a
