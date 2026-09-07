@@ -1,11 +1,11 @@
 # EMA Crossover
 
-**Status:** backtested — the original 20x/30%-margin, no-filter version
-lost 94% of equity (see "Backtest results (pre-fix)" below). The current
-version (5x/10% margin, 100-EMA trend filter) has been re-tested and lost
-only ~16% over the same 8-month window instead — a large improvement, but
-still a net loss, not a validated edge. See "Backtest results (post-fix)"
-below before considering paper or live capital.
+**Status:** draft — the original 20x/30%-margin, no-filter version lost
+94% of equity, and a 5x/10%-margin/100-EMA-filter version cut that to a
+~16% loss but barely reduced whipsaw trades (see "Backtest results
+(pre-fix)" and "(post-fix, 100-EMA)" below). The trend filter length has
+since been dropped to 50 to react faster to chop — **not yet re-tested**.
+Don't treat the current version as validated until it's been run again.
 
 ## Overview
 
@@ -36,13 +36,18 @@ Bidirectional, on the 1h candle close:
 **Added after the pre-fix backtest** (see Backtest results below): the
 original version had no regime filter at all and whipsawed heavily during
 DOGE's extended sideways stretches, reversing on nearly every crossover
-even with no real trend behind it. The 100-period trend EMA filter rejects
-crossover signals that go against the larger trend, on the theory that most
-of the damage came from taking *both* sides of a crossover pair inside a
-range rather than from any single bad signal. This will reduce trade
-frequency below the original ~1/day-to-1/2-days figure during choppy
-stretches specifically (fewer signals pass the filter when price is
-hugging the trend EMA) — an accepted trade-off, not a bug.
+even with no real trend behind it. A trend EMA filter rejects crossover
+signals that go against the larger trend, on the theory that most of the
+damage came from taking *both* sides of a crossover pair inside a range
+rather than from any single bad signal.
+
+**Trend EMA length dropped from 100 to 50** after the post-fix backtest
+(see "Backtest results (post-fix, 100-EMA)" below): a 100-period filter
+barely changed trade count versus no filter at all (~150 → ~160), meaning
+it was too slow to reject much of anything — a 50-period trend EMA reacts
+faster to the same chop and should actually filter more of the
+whipsaw-prone signals, at the cost of also reducing trade frequency more
+than the 100-period version did.
 
 ## Stop loss logic
 
@@ -107,7 +112,7 @@ results below. No partial sizing, no scaling in/out.
 | Candle interval | 1h | chosen for trade-frequency target, not tested against alternatives yet |
 | Fast EMA length | 9 | starting default, not calibrated — see Next steps |
 | Slow EMA length | 21 | starting default, not calibrated — see Next steps |
-| Trend filter EMA length | 100 | added post-mortem to reject crossovers against the larger trend — starting default, not calibrated |
+| Trend filter EMA length | 50 | dropped from 100 after the post-fix backtest barely changed trade count — see Entry logic |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
 | Stop loss | 80% of margin | = 16% price move at 5x |
@@ -147,7 +152,7 @@ strategy(
 // ---- Inputs ----
 fastLen                = input.int(9, "Fast EMA length")
 slowLen                = input.int(21, "Slow EMA length")
-trendLen               = input.int(100, "Trend filter EMA length")
+trendLen               = input.int(50, "Trend filter EMA length")
 leverage               = input.float(5, "Leverage (see margin_long/short note above)", minval = 1, maxval = 20, step = 1)
 marginPct              = input.float(10, "Margin % of equity per trade")
 stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
@@ -247,7 +252,11 @@ the whipsaw itself (don't take crossovers against the larger trend), and
 the leverage/margin cut targets the compounding multiplier (a losing flip
 now costs roughly 12x less in notional terms than before).
 
-## Backtest results (post-fix — 5x leverage, 10% margin, trend filter)
+## Backtest results (post-fix, 100-EMA trend filter — superseded below)
+
+**Superseded by the 50-EMA change above** — recorded here as the result
+that motivated dropping the trend filter length from 100 to 50, not as
+what to expect from the current version.
 
 Run live on TradingView (DOGEUSDT.P, 1h, same Jan 5 – Sep 7 2026 window as
 the pre-fix run) using an updated diagnostic build. Traced from the
