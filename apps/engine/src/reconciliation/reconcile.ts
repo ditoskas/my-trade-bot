@@ -78,12 +78,31 @@ async function checkOpenOrders(db: Db, client: Spot, mismatches: ReconciliationM
   }
 }
 
-// Sanity check, not a precise reconciliation: sums each active strategy's
-// free ledger capital per asset and flags it only if that *exceeds* the
-// exchange's real free balance — i.e. the ledger believes more is
-// available than actually exists. The reverse (exchange has more free than
-// the ledger accounts for) is expected whenever capital hasn't been
+// Sanity check, not a precise reconciliation: sums each active *real spot*
+// strategy's free ledger capital per asset and flags it only if that
+// *exceeds* the exchange's real free balance — i.e. the ledger believes more
+// is available than actually exists. The reverse (exchange has more free
+// than the ledger accounts for) is expected whenever capital hasn't been
 // allocated to a strategy yet, so it's not flagged.
+//
+// Scoped to broker: "binance" only — this function calls the *spot*
+// account (`client` is `@binance/spot`), so:
+//   - "paper" strategies must be excluded: their allocatedCapital is
+//     entirely simulated and was never real money, so summing it in here
+//     produces a number with no relationship to any real exchange balance.
+//   - "binance-futures" strategies must also be excluded: their capital
+//     lives in the futures wallet, not spot, and comparing it against the
+//     spot account's balance is comparing two unrelated wallets. Futures
+//     reconciliation isn't built yet (see CLAUDE.md Phase 3b/6) — until it
+//     is, a futures strategy's balance simply isn't checked here, rather
+//     than silently checked against the wrong wallet.
+// Found live 2026-09-07: btc-high-risk (futures, real, 150 USDT allocated)
+// plus both paper ma-cross-demo strategies (1000 USDT each, simulated) were
+// all being summed together as "2150 USDT" and compared against the real
+// spot wallet's incidental USDT dust balance (~$0.08) — a false-positive
+// BALANCE_MISMATCH alert firing every 5 minutes for ~2 days with no actual
+// funds at risk (confirmed live: no open positions, no open orders, real
+// futures collateral intact).
 async function checkBalances(db: Db, client: Spot, mismatches: ReconciliationMismatch[]): Promise<void> {
   const accountResponse = await client.restAPI.getAccount();
   const account = await accountResponse.data();
@@ -93,7 +112,7 @@ async function checkBalances(db: Db, client: Spot, mismatches: ReconciliationMis
 
   const capitalLedger = new CapitalLedger(db);
   const activeStrategies = await strategiesCollection(db)
-    .find({ lifecycleState: { $nin: ["retired", "draft"] } })
+    .find({ lifecycleState: { $nin: ["retired", "draft"] }, broker: "binance" })
     .toArray();
 
   const ledgerFreeByAsset = new Map<string, Decimal>();
