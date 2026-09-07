@@ -10,6 +10,16 @@ below. See "Backtest results (ADX alone — best so far)" for the full
 comparison and honest caveats (same test window, no out-of-sample check
 yet) before treating this as validated.
 
+**⏸ Session paused here (2026-09-07) — resume with Next steps item 2.**
+Everything tested so far, including the cross-timeframe check, used the
+same Jan–Sep 2026 DOGEUSDT.P window. The next thing to do is test the
+current best config (ADX alone, `minHoldBars=1`, 9/21 EMA, gap≤0.06%) on
+a **different time window or a different symbol** — that's the one gap
+standing between "looks good" and "trustworthy." The diagnostic script
+for this config is still sitting at
+`strategies/ema-crossover-diagnostic.tmp.pine` (untracked scratch file,
+not committed) — reusable as-is, just point TradingView at a different
+date range or symbol before pasting it in.
 ## Overview
 
 Single-symbol DOGEUSDT.P, **20x leverage**, 1h candles. Core thesis: price
