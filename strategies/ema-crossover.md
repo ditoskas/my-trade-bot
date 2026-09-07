@@ -549,34 +549,40 @@ check yet, and the cross-timeframe check below was run against the older
 ADX+minimum-hold version, not this one — worth re-running on 30m/4h with
 minimum-hold disabled before trusting those numbers too.
 
-## Cross-timeframe check (same config, different chart interval — ADX+minhold version, superseded)
+## Cross-timeframe check, re-run with ADX alone (minHoldBars=1)
 
-Same script/parameters (9/21 EMA, ADX≥20, gap≤0.06%, 5-bar min-hold),
-tried on other timeframes to see if the +30.5% result was timeframe-
-specific. **Run against the older ADX+minimum-hold config, not the
-current best (ADX alone) — worth re-checking with minHoldBars=1.**
+Same script/parameters as the best config above (9/21 EMA, ADX≥20,
+gap≤0.06%, minimum hold disabled), re-tested on other timeframes now
+that ADX alone (not combined with minimum hold) is the leading config.
 
-| Timeframe | Return |
-|---|---|
-| 30m | -7.9% |
-| **1h (primary)** | **+30.5%** |
-| 4h | +9% |
+| Timeframe | ADX + 5-bar hold (old) | **ADX alone (current)** |
+|---|---|---|
+| 30m | -7.9% | **+0.81%** |
+| **1h (primary)** | +30.5% | **+67.4%** |
+| 4h | +9% | +6.85% |
 
-Directionally consistent (both 30m and 4h didn't randomly swing wildly
-in either direction relative to 1h) rather than pure noise, which is a
-mildly reassuring sign. But 30m going negative is a real flag: 5 bars is
-a very different real-world duration depending on the chart —
+**All three timeframes are now positive** with ADX alone, where the
+combined config had 30m going negative. That's a meaningfully better
+robustness signal than before — the ADX filter by itself seems to
+generalize across timeframes more consistently than it did paired with
+the minimum-hold rule, consistent with the isolation finding above (the
+minimum hold was overriding signals that were often already correct).
+1h remains by far the strongest, but this is no longer "works on 1h,
+breaks elsewhere" — it's "works everywhere, works best on 1h."
+
+(The old combined config's 30m weakness made sense in hindsight: 5 bars
+is a very different real-world duration depending on the chart —
 2.5 hours on 30m, 5 hours on 1h, 20 hours on 4h — so `minHoldBars` as a
-fixed *bar count* rather than a fixed *time duration* likely makes this
-config more timeframe-specific than intended. Worth keeping in mind if
-this is ever generalized beyond the 1h chart it was tuned on.
+fixed *bar count* rather than a fixed *time duration* made that version
+more timeframe-specific than intended. Removing it removed that
+sensitivity too.)
 
 ## Next steps
 
-1. **Re-run the cross-timeframe check (30m/4h) with `minHoldBars=1`** —
-   the existing 30m/-7.9%/4h/+9% numbers above are from the older,
-   now-superseded ADX+minimum-hold config. ADX alone might generalize
-   better or worse across timeframes; currently unknown.
+1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**,
+   see above: all three timeframes (30m +0.81%, 1h +67.4%, 4h +6.85%) are
+   now positive, a meaningfully better robustness signal than the
+   combined config's negative 30m result.
 2. **Test on a different time window or symbol** before trusting this
    result — every version of this strategy has been tuned against the
    same Jan–Sep 2026 DOGEUSDT.P data, which is the single biggest
