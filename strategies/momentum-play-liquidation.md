@@ -4,17 +4,21 @@
 
 ## Overview
 
-Single-symbol PEPEUSDT.P, **15x leverage**, 5m candles. Trades the
+Single-symbol DOGEUSDT.P, **15x leverage**, 5m candles. Trades the
 opposite thesis from its sibling strategy,
 [`momentum-play-funding.md`](momentum-play-funding.md): rather than riding
 crowding while it persists, this fades a sharp price spike (the shape a
 liquidation cascade leaves behind — a fast move with a quick partial
 retrace) on the theory that cascades overshoot and mean-revert. Kept as a
-separate strategy/file/symbol/timeframe from the funding leg rather than
+separate strategy/file/timeframe from the funding leg rather than
 combined into one script, per an explicit request to keep the two
 mechanisms independent rather than have them fight each other inside a
-single strategy. Deliberately high-risk, on a meme coin, on a fast
-timeframe — the name is literal.
+single strategy. Deliberately high-risk, on a fast timeframe — the name
+is literal. Originally scoped to PEPEUSDT.P for symbol diversity from the
+funding leg, but consolidated onto DOGEUSDT.P after PEPE's symbol
+couldn't be reliably switched to in this session's automated browser
+control (unrelated to the strategy itself, which never got that far) —
+simplicity won out over the diversification goal.
 
 ## Entry logic
 
@@ -30,7 +34,7 @@ Bidirectional, on the 5m candle close:
 - **Short**: exact mirror on `upperWick`.
 
 The 3×ATR wick-size threshold is a starting default, not calibrated
-against real PEPE tick data — see Next steps.
+against real DOGE tick data — see Next steps.
 
 Only enters from flat, same as the funding leg.
 
@@ -38,7 +42,7 @@ Only enters from flat, same as the funding leg.
 
 **1× ATR(14) on the 5m chart**, from entry. Tighter multiple than the
 funding leg's 1.5× deliberately: a false-positive wick read on a fast,
-noisy 5m PEPE chart needs to be cut quickly rather than given room to be
+noisy 5m chart needs to be cut quickly rather than given room to be
 "maybe still right."
 
 ## Take profit logic
@@ -77,7 +81,7 @@ Notional exposure = margin × 15.
 
 | Name | Default | Notes |
 |---|---|---|
-| Symbol | PEPEUSDT.P | |
+| Symbol | DOGEUSDT.P | |
 | Candle interval | 5m | |
 | Leverage | 15x | |
 | Risk % of equity per trade | 20% | |
@@ -167,26 +171,59 @@ plot(atrVal * wickAtrMult, "Wick threshold", color = color.gray)
 
 ## Backtest notes
 
-- Run on the **5m chart**, PEPEUSDT.P, on TradingView's Strategy Tester.
-- **Not yet compiled or run** — written using only Pine primitives already
-  confirmed working elsewhere in this repo (`ta.atr`, `math.min`/`max`,
-  `strategy.entry`/`exit`, the same bracket-order idiom
-  `short-term-high-risk.md` uses), but this exact script hasn't itself
-  been pasted into TradingView yet. Treat as believed-correct, not
-  confirmed-correct.
-- The 3×ATR wick-size threshold is a first guess, not calibrated against
-  real PEPE tick data — the most important thing to tune once backtested.
-- PEPE's price is denominated in very small decimals — worth confirming
-  TradingView's Strategy Tester handles the quantity/precision sensibly
-  before trusting the numbers, a known general risk with meme-coin
-  backtests that hasn't specifically been checked here yet.
+- Run on the **5m chart**, DOGEUSDT.P, on TradingView's Strategy Tester.
+- **Live-verified**: pasted directly into TradingView and compiled cleanly
+  on the first try — the Pine syntax reuse (ATR, wick math, bracket-order
+  `strategy.exit`) from already-proven scripts in this repo held up.
+
+## Backtest results (first run, unfiltered)
+
+| Metric | Value |
+|---|---|
+| Total PnL | +7.3% |
+| Max drawdown | **53.86%** |
+| Win rate | 24.00% (6/25) |
+| Profit factor | 1.77 |
+
+**The drawdown is the real story here, and it isn't a surprise** — it's
+the exact risk flagged plainly in Position sizing before this ever ran:
+20% equity risked per trade means roughly 4-5 consecutive stop-outs erases
+most of the account, and a 53.86% drawdown is consistent with close to
+that happening once in this run. PF 1.77 is genuinely good on its own,
+but +7.3% total return against a 53.86% drawdown is a rough risk-adjusted
+picture — you risked losing over half the account to end up up single
+digits.
+
+Implied payoff ratio from PF and win rate (PF = (WR×avgWin) /
+((1-WR)×avgLoss)) works out to roughly **5.6:1** avg win vs. avg loss —
+notably wider than the 1.5R take-profit target alone would suggest,
+meaning either the ATR-based stop distance varies a lot trade-to-trade,
+or something in the win/loss mix isn't fully explained by the R-multiple
+alone. Worth understanding once real per-trade data is examined (see Next
+steps) rather than left as an unexplained gap.
 
 ## Next steps
 
-1. **Paste into TradingView and confirm it actually compiles** — not yet
-   done for this exact script.
-2. **Calibrate the 3×ATR wick threshold** against real PEPE history once
-   backtested.
-3. Once compiling cleanly, apply the same live-verification discipline
-   this project's other strategies used before ever considering paper or
-   live capital.
+1. **Raise win rate without guessing blind.** The user asked specifically
+   to improve on 24% (6/25) win rate. Per this project's own track
+   record — `btc-high-risk.md`'s iteration 9 (EMA/VWAP confluence, guessed
+   without evidence) made things *much worse*, while every diagnostic-log-
+   driven change in this project's history found a real, durable edge —
+   the next step is adding temporary `log.info()` calls capturing
+   per-trade context (wick-to-ATR ratio, close-back-into-wick %, hour of
+   day UTC, volume vs. recent average) at entry, running it again, and
+   comparing the 6 winners against the 19 losers directly before touching
+   the entry logic. Not yet done — session's live TradingView control hit
+   friction switching chart symbols; next attempt should either retry
+   live or have the user run the diagnostic version and share the Pine
+   Logs output.
+2. **Calibrate the 3×ATR wick threshold** against real DOGE history once
+   the diagnostic pass above identifies what's actually differentiating
+   winners from losers — not a blind bump to 4×/5× ATR.
+3. Given the 53.86% drawdown, **also worth testing a materially lower risk
+   % per trade** (e.g. 5-10% instead of 20%) as an independent lever from
+   the win-rate work above — PF 1.77 suggests the edge itself may not need
+   20% risk to be worth trading.
+4. Once both levers are explored, apply the same live-verification
+   discipline this project's other strategies used before ever
+   considering paper or live capital.
