@@ -1,12 +1,12 @@
 # EMA Crossover
 
-**Status:** draft — the original 20x/30%-margin, no-filter version lost
-94% of equity; 5x/10%-margin/100-EMA-filter cut that to ~16% loss; a
-50-period trend filter made things worse (~-31%) and was reverted (see
-Backtest results below for all three). The fast/slow crossover pair has
-now been widened from 9/21 to 20/50, on the theory that a slower signal
-itself (not just the trend filter) reacts less to short-term noise —
-**not yet tested**.
+**Status:** backtested — the best result found so far is 5x leverage,
+10% margin, **9/21 fast/slow, 100-period trend filter: ~-16%** (see
+"Backtest results (post-fix, 100-EMA)" below). Two follow-up attempts to
+improve it both made things worse: shortening the trend filter to 50
+(~-31%) and widening the crossover pair to 20/50 (~-32%) — both reverted.
+See "Backtest results" for all four runs and the pattern they reveal
+before trying more parameter changes.
 
 ## Overview
 
@@ -34,11 +34,13 @@ Bidirectional, on the 1h candle close:
 - **Short**: fast EMA crosses below slow EMA (`ta.crossunder(fastEMA,
   slowEMA)`) **and** price is below the trend EMA (`close < trendEMA`).
 
-**Fast/slow lengths widened from 9/21 to 20/50** after the trend-filter
-experiments above: shortening the *filter* made things worse because a
-faster average reacts to the same noise the crossover already reacts to.
-The next lever is applying that same "slower = less noise-reactive" logic
-to the crossover signal itself, not just the filter — untested so far.
+**Fast/slow lengths tested at 20/50, reverted back to 9/21** — see
+"Backtest results (20/50 crossover — tried and rejected)" below. Widening
+the signal itself made things worse (~-32%, and one single stretch lost
+-307.68), for a different reason than the trend-filter case: a slower
+crossover pair lags the actual turn, so it tends to catch *worse* entries
+(price has already moved by the time it fires) rather than fewer bad
+ones. Kept at 9/21.
 
 **Added after the pre-fix backtest** (see Backtest results below): the
 original version had no regime filter at all and whipsawed heavily during
@@ -119,8 +121,8 @@ results below. No partial sizing, no scaling in/out.
 |---|---|---|
 | Symbol | DOGEUSDT.P | |
 | Candle interval | 1h | chosen for trade-frequency target, not tested against alternatives yet |
-| Fast EMA length | 20 | widened from 9 — see Entry logic; not yet tested |
-| Slow EMA length | 50 | widened from 21 — see Entry logic; not yet tested |
+| Fast EMA length | 9 | tested at 20, reverted — worse (-32% vs -16%) — see Entry logic |
+| Slow EMA length | 21 | tested at 50, reverted — worse (-32% vs -16%) — see Entry logic |
 | Trend filter EMA length | 100 | tested at 50, reverted — 50 let *more* whipsaw trades through (~220 vs ~160) and performed worse (-31% vs -16%) — see Entry logic |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
@@ -159,8 +161,8 @@ strategy(
      process_orders_on_close = true)
 
 // ---- Inputs ----
-fastLen                = input.int(20, "Fast EMA length")
-slowLen                = input.int(50, "Slow EMA length")
+fastLen                = input.int(9, "Fast EMA length")
+slowLen                = input.int(21, "Slow EMA length")
 trendLen               = input.int(100, "Trend filter EMA length")
 leverage               = input.float(5, "Leverage (see margin_long/short note above)", minval = 1, maxval = 20, step = 1)
 marginPct              = input.float(10, "Margin % of equity per trade")
@@ -309,26 +311,63 @@ shortening this filter without a different mechanism (e.g. requiring the
 trend EMA to be sloping, not just price on one side of it) — plain length
 reduction moves in the wrong direction.
 
+## Backtest results (20/50 crossover — tried and rejected)
+
+Same window, same script, only `fastLen`/`slowLen` changed from 9/21 to
+20/50 (trend filter back at 100).
+
+| Metric | 9/21 (kept) | 20/50 (rejected) |
+|---|---|---|
+| Ending equity | ~838 | ~676 |
+| Total return | ~-16% | **~-32%** |
+| Entries | ~160 | ~117 |
+| Largest single stretch loss | -962 (pre-fix, unfiltered) | **-307.68** |
+
+Worse despite fewer trades — confirms this isn't simply "fewer trades is
+better." A slower crossover pair lags the actual price turn, so its
+entries land later and worse, not cleaner.
+
+## Summary across all four runs tested so far
+
+| Config | Return | Entries |
+|---|---|---|
+| 20x/30%, no filter (pre-fix) | -94.4% | ~150 |
+| 5x/10%, 9/21, 100-EMA filter | **-16%** (best) | ~160 |
+| 5x/10%, 9/21, 50-EMA filter | -31% | ~220 |
+| 5x/10%, 20/50, 100-EMA filter | -32% | ~117 |
+
+Every parameter change tried after the initial leverage fix made things
+worse. That's a real signal, not bad luck: a plain EMA-crossover-plus-
+trend-filter design may not have an edge on DOGEUSDT.P 1h at all, at
+least not one reachable by nudging these particular lengths. Worth
+treating the current 9/21/100 config as a local optimum of a
+fundamentally weak design, not a strategy one parameter tweak away from
+working.
+
 ## Next steps
 
-1. **This still isn't a profitable strategy as configured** — don't move
-   toward paper/live capital based on this result. The next real question
-   is why so few trades (4/160) ever reach the stop/trail at all — either
-   the 16%/20%/4% price-move distances (post-leverage-cut) are simply too
-   wide to matter on DOGE's typical 1h range, or the crossover reverses
-   faster than price can travel that far. Worth adding per-trade PnL
-   logging on the *reversal* path specifically (not just full flat-exits)
-   to see the real win/loss distribution — the current diagnostic script
-   only captures pnl cleanly on full flat-exits.
-2. **Calibrate the 9/21/100 EMA lengths together** — the trend filter
-   reduced entries only slightly (~150 → ~160, actually about the same),
-   suggesting it isn't rejecting much; a shorter trend EMA (e.g. 50) or a
-   stricter filter (e.g. requiring the trend EMA itself to be sloping, not
-   just price on one side of it) may be needed to actually cut whipsaw
-   trades rather than just leverage exposure.
-3. Given the ~34% drawdown from peak still happened with the filter in
-   place, **chop risk is reduced, not eliminated** — this needs to be
-   understood before increasing size or leverage back up.
-4. Treat the originally stated 30%/day performance target as aspirational,
+1. **Stop tuning EMA lengths blind — every attempt after the leverage fix
+   has made things worse.** Two independent directions (shorter filter,
+   longer signal) both failed for different, real reasons (less filtering
+   vs. more lag), which is itself evidence this design's ceiling may just
+   be "loses less badly" rather than "profitable," at least on
+   DOGEUSDT.P 1h. Don't keep nudging fastLen/slowLen/trendLen by feel —
+   the next test should target *why* trades lose, not another length.
+2. **Add per-trade PnL logging on the reversal path**, not just full
+   flat-exits — only 4-5 of ~150-220 trades in any run ever hit the
+   stop/trail, so the current diagnostic script's `pnl` field is blind to
+   the vast majority of what's actually happening. Without per-reversal
+   PnL, "which signals lose" can't be answered, and further tuning is
+   still a guess.
+3. **If per-reversal data still shows no separable winners from losers**,
+   the honest conclusion is that a plain EMA-crossover-plus-trend-filter
+   doesn't have an edge on this symbol/timeframe, and the right move is to
+   retire this approach (see `delete-strategy`/mark `retired`) rather than
+   keep tuning — matching this project's own precedent of calling a
+   strategy's real gaps honestly (see `ma-cross-demo.md`).
+4. Given the ~34% drawdown from peak still happened with the filter in
+   place (best config), **chop risk is reduced, not eliminated** — relevant
+   if any variant of this is ever reconsidered for capital.
+5. Treat the originally stated 30%/day performance target as aspirational,
    not a bar this backtest needs to clear — judge on real win rate/PF/
    drawdown instead, per the Targets section above.
