@@ -1463,6 +1463,50 @@ was not touched.
    Saved back under the same "BTC High-Risk" name. Worth periodically
    confirming this script still exists given it silently disappeared once
    already, for a reason not yet identified.
+   **Since then**: user reported the strategy had been live ~24h with no
+   trades and asked how to check for errors. Diagnosis (2026-09-07):
+   confirmed this was expected, not a bug — `apps/engine`'s audit log
+   showed zero `DECISION`/`ORDER_INTENT`/`ORDER_FILLED` events at all,
+   consistent with the night-session-only + 4h-confluence filter simply
+   not having fired yet, not a signal misfiring or an order failing. While
+   checking, found and fixed two real, unrelated bugs:
+   - **Dashboard live indicator stuck on "connecting…"**: the deployment's
+     public front door is GitLab's own nginx (see `ansible/README.md`'s
+     "Coexisting with another nginx" section), whose custom
+     `/etc/gitlab/trade-bot-nginx.conf` forwarding block was missing
+     `proxy_buffering off`/`proxy_read_timeout` — present in this
+     project's own `nginx-vhost.conf.j2` but not copied into the
+     GitLab-side snippet when it was set up. GitLab's nginx was buffering
+     the SSE response, so the browser's `EventSource` never completed its
+     `open` handshake. Fixed by adding both directives to the GitLab-side
+     config file directly and running `gitlab-ctl reconfigure`;
+     live-verified in a real browser afterward (indicator flips to
+     "live"). `https://` (as opposed to `http://`) still throws a
+     certificate error for this domain — that config file only has a
+     `listen 80` block, no 443 — left unfixed, tracked as a follow-up.
+   - **False-positive `BALANCE_MISMATCH` reconciliation alert**, firing
+     every 5 minutes for roughly 2 days straight
+     (`apps/engine/src/reconciliation/reconcile.ts`'s `checkBalances`):
+     it summed *every* active strategy's free ledger capital together
+     regardless of broker — `ma-cross-demo` (1000 USDT, paper) +
+     `ma-cross-demo-eth` (1000 USDT, paper) + `btc-high-risk` (150 USDT,
+     real futures) = exactly the alerted "2150 USDT" — then compared that
+     combined number against the real **spot** account's balance (~$0.08
+     USDT dust), even though `btc-high-risk` trades **futures**, a
+     wallet this function has never actually checked (a gap already
+     flagged in Phase 3b/6 but not previously connected to this alert).
+     Live-verified no funds were actually at risk before fixing: no open
+     positions, no open orders, real futures collateral present (~313
+     BNFCR — Binance's yield-bearing collateral wrapper, which is why its
+     balance visibly ticks upward continuously). Fixed by scoping the
+     query to `broker: "binance"` strategies only — paper strategies are
+     excluded outright (their capital was never real), and futures
+     strategies are left unchecked here rather than silently compared
+     against the wrong wallet, until real futures reconciliation is
+     built. Deployed and confirmed live: the engine restarted cleanly and
+     the next several reconciliation cycles logged nothing (silence is
+     the success case — `index.ts` only `console.warn`s when
+     `mismatches.length > 0`).
 1. **Re-verify on a different date range or symbol** before trusting this
    margin — now the single most urgent item by far. Iteration 15's +$617
    (56 trades) is nearly triple iteration 14's already-unverified +$232 (74
