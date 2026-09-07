@@ -202,9 +202,64 @@ or something in the win/loss mix isn't fully explained by the R-multiple
 alone. Worth understanding once real per-trade data is examined (see Next
 steps) rather than left as an unexplained gap.
 
+## Backtest results (30m chart, unofficial spot-check — n=3, not statistically meaningful)
+
+The script is single-timeframe with no `request.security()`, so it runs
+on whatever chart timeframe is loaded — this result came from loading the
+chart on **30m** instead of the intended 5m (see the desktop-app history
+note above), not a deliberate parameter re-tune for that timeframe.
+
+| Metric | Value |
+|---|---|
+| Total PnL | +624.16 USDT (+62.42%) |
+| Max drawdown | 124.51 USDT (9.83%) |
+| Win rate | 66.67% (2/3) |
+| Profit factor | 453.689 |
+
+**Flagging this clearly rather than treating it as a finding**: 3 trades
+is nowhere near enough to draw a conclusion from, and a profit factor of
+453 is itself a symptom of that — it means the single loss was tiny
+relative to the two wins, which is exactly the kind of number a handful
+of trades can produce by chance. It says nothing about what a 30m version
+of this strategy would do over dozens or hundreds of trades. It also
+uses the 5m-tuned parameters (3×ATR wick threshold, 1×ATR stop, 1.5R
+target) unchanged, not values calibrated for 30m's different noise
+profile. Worth widening the test window to accumulate a real sample size
+on 30m before drawing any conclusion — see Next steps.
+
+## Cross-symbol spot-check (PENGUUSDT.P, 30m assumed — not explicitly reconfirmed)
+
+Same unmodified script/parameters (5m-tuned: 3×ATR wick, 1×ATR stop, 1.5R
+target, 20% risk, 15x leverage), tried on a different symbol to see if the
+DOGE 30m result generalized.
+
+| Metric | Value |
+|---|---|
+| Total PnL | -376 USDT (-37.6%) |
+| Max drawdown | 658 USDT (51.31%) |
+| Win rate | 16.67% (1/6) |
+| Profit factor | 0.428 |
+
+**This is the more informative result of the two 30m spot-checks.** A
+losing profit factor (<1) on a different symbol, with the same
+unmodified parameters, is consistent with the DOGE 2/3 result being
+noise from an undersized sample rather than a real cross-symbol edge —
+exactly the risk flagged when that result was first recorded. Parameters
+tuned for 5m DOGE wick behavior have no reason to transfer to a
+different coin's volatility profile on a different timeframe without
+being recalibrated per-symbol, and this result is consistent with that.
+Reinforces: don't treat the DOGE 30m number as a finding, and don't
+generalize this strategy across symbols without per-symbol
+recalibration and a real sample size.
+
 ## Next steps
 
-1. **Raise win rate without guessing blind.** The user asked specifically
+1. **Before reading anything into the 30m result above: get a real
+   sample size.** Widen the backtest's date range on the 30m chart (load
+   more history) until there are at least a few dozen trades, then
+   re-evaluate win rate/PF/drawdown on that larger sample — 3 trades
+   can't distinguish a real edge from luck.
+2. **Raise win rate without guessing blind (5m, the original target).** The user asked specifically
    to improve on 24% (6/25) win rate. Per this project's own track
    record — `btc-high-risk.md`'s iteration 9 (EMA/VWAP confluence, guessed
    without evidence) made things *much worse*, while every diagnostic-log-
@@ -217,13 +272,13 @@ steps) rather than left as an unexplained gap.
    friction switching chart symbols; next attempt should either retry
    live or have the user run the diagnostic version and share the Pine
    Logs output.
-2. **Calibrate the 3×ATR wick threshold** against real DOGE history once
+3. **Calibrate the 3×ATR wick threshold** against real DOGE history once
    the diagnostic pass above identifies what's actually differentiating
    winners from losers — not a blind bump to 4×/5× ATR.
-3. Given the 53.86% drawdown, **also worth testing a materially lower risk
+4. Given the 53.86% drawdown, **also worth testing a materially lower risk
    % per trade** (e.g. 5-10% instead of 20%) as an independent lever from
    the win-rate work above — PF 1.77 suggests the edge itself may not need
    20% risk to be worth trading.
-4. Once both levers are explored, apply the same live-verification
+5. Once both levers are explored, apply the same live-verification
    discipline this project's other strategies used before ever
    considering paper or live capital.
