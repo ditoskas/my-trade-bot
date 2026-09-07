@@ -1,12 +1,14 @@
 # EMA Crossover
 
-**Status:** backtested — the best result found so far is 5x leverage,
-10% margin, **9/21 fast/slow, 100-period trend filter: ~-16%** (see
-"Backtest results (post-fix, 100-EMA)" below). Two follow-up attempts to
-improve it both made things worse: shortening the trend filter to 50
-(~-31%) and widening the crossover pair to 20/50 (~-32%) — both reverted.
-See "Backtest results" for all four runs and the pattern they reveal
-before trying more parameter changes.
+**Status:** draft — per-trade diagnostic logging (159 closed trades)
+found a real, actionable signal instead of another blind parameter guess:
+trades where the fast/slow EMA gap was already wide *at the moment of the
+cross* lost far more on average than tight-gap crosses (a wide gap means
+the cross fired late, after the move had already run). A gap filter has
+been added on that basis — **not yet tested**. See "Diagnostic findings
+(per-trade PnL)" below for the full breakdown, including two other
+patterns found but not yet acted on (direction asymmetry, trend-filter
+distance).
 
 ## Overview
 
@@ -30,9 +32,21 @@ Bidirectional, on the 1h candle close:
 
 - **Long**: fast EMA crosses above slow EMA (`ta.crossover(fastEMA,
   slowEMA)`) **and** price is above the longer-term trend EMA (`close >
-  trendEMA`).
+  trendEMA`) **and** the fast/slow gap at the cross isn't too wide (see
+  the gap filter below).
 - **Short**: fast EMA crosses below slow EMA (`ta.crossunder(fastEMA,
-  slowEMA)`) **and** price is below the trend EMA (`close < trendEMA`).
+  slowEMA)`) **and** price is below the trend EMA (`close < trendEMA`)
+  **and** the same gap filter.
+
+**Crossover gap filter added** after per-trade diagnostic logging (see
+Diagnostic findings below) found that a wide fast/slow EMA separation *at
+the moment of the cross* predicted worse trades — `gapPct =
+|fastEMA - slowEMA| / close * 100` in the worst third of observed trades
+(≥ ~0.06%) averaged -4.80 pnl, versus +0.87 for the better two-thirds.
+Entries now require `gapPct <= maxGapPct` (default 0.06). This is the
+first change in this strategy's history driven by real per-trade
+evidence rather than a length guess — see the diagnostic section for why
+it's trusted more than the earlier attempts.
 
 **Fast/slow lengths tested at 20/50, reverted back to 9/21** — see
 "Backtest results (20/50 crossover — tried and rejected)" below. Widening
@@ -124,6 +138,7 @@ results below. No partial sizing, no scaling in/out.
 | Fast EMA length | 9 | tested at 20, reverted — worse (-32% vs -16%) — see Entry logic |
 | Slow EMA length | 21 | tested at 50, reverted — worse (-32% vs -16%) — see Entry logic |
 | Trend filter EMA length | 100 | tested at 50, reverted — 50 let *more* whipsaw trades through (~220 vs ~160) and performed worse (-31% vs -16%) — see Entry logic |
+| Max crossover gap (% of price) | 0.06 | new — rejects late/wide-gap crosses per per-trade diagnostic findings, not yet backtested |
 | Leverage | 5x | cut from 20x after the pre-fix backtest — see Backtest results |
 | Margin % of equity per trade | 10% | cut from 30% after the pre-fix backtest |
 | Stop loss | 80% of margin | = 16% price move at 5x |
@@ -169,16 +184,22 @@ marginPct              = input.float(10, "Margin % of equity per trade")
 stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
 trailActivateMarginPct = input.float(100, "Trailing-stop activation: % of margin gained")
 trailOffsetMarginPct   = input.float(20, "Trailing-stop offset: % of margin given back")
+maxGapPct              = input.float(0.06, "Max fast/slow gap at cross (% of price)")
 
 fastEMA  = ta.ema(close, fastLen)
 slowEMA  = ta.ema(close, slowLen)
 trendEMA = ta.ema(close, trendLen)
+gapPct   = math.abs(fastEMA - slowEMA) / close * 100
 
-// Trend filter added post-mortem: only take a crossover in the direction
+// Trend filter (post-mortem #1): only take a crossover in the direction
 // of the larger trend, to cut the whipsaw-in-chop losses that drove the
 // pre-fix 94% drawdown (see Backtest results below).
-longSignal  = ta.crossover(fastEMA, slowEMA) and close > trendEMA
-shortSignal = ta.crossunder(fastEMA, slowEMA) and close < trendEMA
+// Gap filter (post-mortem #2, evidence-based): per-trade diagnostic
+// logging showed a wide fast/slow gap at the moment of the cross predicts
+// a worse trade (the cross fired late, after the move already ran) - see
+// Diagnostic findings below.
+longSignal  = ta.crossover(fastEMA, slowEMA) and close > trendEMA and gapPct <= maxGapPct
+shortSignal = ta.crossunder(fastEMA, slowEMA) and close < trendEMA and gapPct <= maxGapPct
 
 // ---- Position sizing: fixed % of equity as margin ----
 f_qty(entryClose) =>
@@ -344,30 +365,80 @@ treating the current 9/21/100 config as a local optimum of a
 fundamentally weak design, not a strategy one parameter tweak away from
 working.
 
+## Diagnostic findings (per-trade PnL, 9/21/100 config, 159 closed trades)
+
+Built a v5 diagnostic script that logs a `CLOSE` line for **every** trade
+exit (reversal *or* stop/trail), not just full flat-exits like the
+earlier diagnostic versions — those only ever caught 4-5 trades out of
+150+, blind to the other 97%. Parsed programmatically (grep/awk over the
+downloaded log), not by hand. Total pnl -161.82 (matches the ~-16%
+result), win rate 35.2%, profit factor 0.81.
+
+**Trades close almost entirely via reversal, and reversals lose on
+average**: 155 of 159 trades closed on the opposite crossover firing;
+those averaged **-1.79** each. Only 4 ever ran far enough to hit the
+stop/trail, averaging +29 each (too small a sample to trust alone, but
+consistent with "letting a trade run further is good, most get cut by a
+reversal too early to know").
+
+**Crossover gap size at entry — acted on, see Entry logic above**: a wide
+fast/slow EMA gap at the moment of the cross (the cross fired late, after
+price had already moved) predicted materially worse trades. Splitting
+159 trades into thirds by gap size:
+
+| Gap tercile | Trades | Win rate | Avg PnL |
+|---|---|---|---|
+| Narrowest | 53 | 43.4% | **+1.56** |
+| Middle | 53 | 28.3% | +0.18 |
+| Widest | 53 | 34.0% | **-4.80** |
+
+**Direction asymmetry — noted, not acted on**: shorts were ~breakeven,
+longs clearly lost.
+
+| Side | Trades | Win rate | Avg PnL |
+|---|---|---|---|
+| SHORT | 93 | 39.8% | +0.53 |
+| LONG | 66 | 28.8% | -3.2 |
+
+Not applied as a filter: DOGE fell ~40% over this exact test window
+(Jan–Sep 2026), so "shorts did better" may just reflect the test period's
+downtrend rather than a structural edge — the gap-size finding above
+doesn't have that regime-dependency problem, which is why it was acted
+on first and this wasn't.
+
+**Trend-filter distance — weak, not acted on**: win rate rose with
+distance from the trend EMA (21% → 49% across terciles) but average PnL
+didn't improve cleanly alongside it, so this wasn't as clean or
+trustworthy a lever as the gap-size finding.
+
 ## Next steps
 
-1. **Stop tuning EMA lengths blind — every attempt after the leverage fix
+1. **Test the gap filter live** — this is the first change in this
+   strategy's history driven by real per-trade evidence rather than a
+   length guess. Re-run the diagnostic script (now with `maxGapPct`
+   added) and check whether excluding wide-gap crosses actually improves
+   the aggregate result, not just the historical subset it was derived
+   from — the terciles above are in-sample by construction.
+2. **If the gap filter helps, consider testing the direction asymmetry
+   next, but on a different time window first** — the long/short split
+   found above is confounded with this specific 8-month downtrend and
+   needs out-of-sample confirmation before being turned into a rule.
+3. **Stop tuning EMA lengths blind — every attempt after the leverage fix
    has made things worse.** Two independent directions (shorter filter,
    longer signal) both failed for different, real reasons (less filtering
    vs. more lag), which is itself evidence this design's ceiling may just
    be "loses less badly" rather than "profitable," at least on
    DOGEUSDT.P 1h. Don't keep nudging fastLen/slowLen/trendLen by feel —
    the next test should target *why* trades lose, not another length.
-2. **Add per-trade PnL logging on the reversal path**, not just full
-   flat-exits — only 4-5 of ~150-220 trades in any run ever hit the
-   stop/trail, so the current diagnostic script's `pnl` field is blind to
-   the vast majority of what's actually happening. Without per-reversal
-   PnL, "which signals lose" can't be answered, and further tuning is
-   still a guess.
-3. **If per-reversal data still shows no separable winners from losers**,
-   the honest conclusion is that a plain EMA-crossover-plus-trend-filter
-   doesn't have an edge on this symbol/timeframe, and the right move is to
+4. **If the gap filter turns out not to help out-of-sample**, the honest
+   conclusion is that a plain EMA-crossover-plus-trend-filter doesn't have
+   a reachable edge on this symbol/timeframe, and the right move is to
    retire this approach (see `delete-strategy`/mark `retired`) rather than
    keep tuning — matching this project's own precedent of calling a
    strategy's real gaps honestly (see `ma-cross-demo.md`).
-4. Given the ~34% drawdown from peak still happened with the filter in
+5. Given the ~34% drawdown from peak still happened with the filter in
    place (best config), **chop risk is reduced, not eliminated** — relevant
    if any variant of this is ever reconsidered for capital.
-5. Treat the originally stated 30%/day performance target as aspirational,
+6. Treat the originally stated 30%/day performance target as aspirational,
    not a bar this backtest needs to clear — judge on real win rate/PF/
    drawdown instead, per the Targets section above.
