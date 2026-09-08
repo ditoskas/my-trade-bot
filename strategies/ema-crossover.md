@@ -1,25 +1,30 @@
 # EMA Crossover
 
-**Status:** backtested — best result found: **ADX filter alone, no
-minimum hold: +67.4%, profit factor 2.16.** Isolating the two changes
-combined in the previous version showed the minimum-hold addition was
-actually *hurting* results once ADX was already filtering well (ADX+hold
-together: +30.5%; ADX alone: +67.4%) — a real, clean finding from
-isolation testing, not a guess. `minHoldBars` defaults to 1 (disabled)
-below. See "Backtest results (ADX alone — best so far)" for the full
-comparison and honest caveats (same test window, no out-of-sample check
-yet) before treating this as validated.
+**Status:** backtested, **out-of-sample check (different symbol) shows the
+edge does not transfer at anywhere near the same strength — do not go
+live on this yet.** In-sample best result (DOGEUSDT.P, ADX filter alone,
+no minimum hold): +67.4%, profit factor 2.16. Tested on PENGUUSDT.P, same
+1h timeframe, same Jan–Sep 2026 window: **+6.9%, profit factor 1.10** —
+still net positive but far weaker, and PF 1.10 is thin enough to flip
+negative on a slightly different cutoff. See "Backtest results
+(out-of-sample — different symbol)" below. This is more consistent with
+"DOGE's specific 8 months did a lot of the work" than "this design has a
+transferable edge." The different-time-window check (same DOGE symbol, an
+earlier period) still hasn't been run — worth doing before concluding
+this design has no edge at all, since PENGU's own chop/trend character
+could explain part of the gap rather than the design itself.
 
-**⏸ Session paused here (2026-09-07) — resume with Next steps item 2.**
-Everything tested so far, including the cross-timeframe check, used the
-same Jan–Sep 2026 DOGEUSDT.P window. The next thing to do is test the
-current best config (ADX alone, `minHoldBars=1`, 9/21 EMA, gap≤0.06%) on
-a **different time window or a different symbol** — that's the one gap
-standing between "looks good" and "trustworthy." The diagnostic script
-for this config is still sitting at
+**⏸ Session paused here (2026-09-08).** Next: run the still-missing
+different-time-window check (DOGEUSDT.P 1h, an earlier period than
+Jan–Sep 2026), then decide based on both out-of-sample results together
+whether to keep tuning, retire this approach per the criterion in Next
+steps, or explore a structurally different direction (walk-forward
+validation instead of manual spot-checks; a regime-detection-gated
+filter; or mean-reversion instead of trend-following, given DOGE's own
+diagnostics showed heavy chop). The diagnostic script is still sitting at
 `strategies/ema-crossover-diagnostic.tmp.pine` (untracked scratch file,
 not committed) — reusable as-is, just point TradingView at a different
-date range or symbol before pasting it in.
+date range before pasting it in.
 ## Overview
 
 Single-symbol DOGEUSDT.P, **20x leverage**, 1h candles. Core thesis: price
@@ -587,23 +592,78 @@ fixed *bar count* rather than a fixed *time duration* made that version
 more timeframe-specific than intended. Removing it removed that
 sensitivity too.)
 
+## Backtest results (out-of-sample — different symbol)
+
+Same script, same window (Jan 5 – Sep 6 2026), same 1h timeframe — only
+the chart symbol changed, from DOGEUSDT.P to **PENGUUSDT.P**. Parsed the
+same way (awk over the downloaded per-trade log,
+`pine-logs-EMA Crossover (Diagnostic v8, ADX only, no min-hold)_abd0e.csv`).
+
+| Metric | DOGEUSDT.P (in-sample) | **PENGUUSDT.P (out-of-sample)** |
+|---|---|---|
+| Total return | +67.4% | **+6.9%** |
+| Trades | 75 | 43 |
+| Win rate | 34.7% | 44.2% |
+| Profit factor | 2.16 | **1.10** |
+| Reversal exits | 70 | 32 |
+| Stop/trail exits | 5 | 11 |
+
+**Honest read**: not a clean invalidation — PENGU is still net positive
+and PF is still (barely) above 1 — but a dramatic drop from DOGE's
+headline number. PF 1.10 is thin enough that a slightly different date
+cutoff or a handful of unlucky trades could flip it negative. This is
+more consistent with "DOGE's specific 8-month price action was doing a
+lot of the work" than with "this design has an edge that transfers
+across symbols." Doesn't fully settle the question on its own though —
+PENGU's own chop/trend character during this window could account for
+part of the gap rather than the strategy design itself, which is why the
+different-*time-window* check (same DOGE symbol) below is still needed
+before drawing a final conclusion.
+
+**Correction to the historical record**: an earlier download in this
+session (`..._32cc8.csv`) was initially thought to be a new out-of-sample
+run but turned out to be byte-identical to the original `_7604b.csv`
+in-sample result (verified via `diff`) — same DOGEUSDT.P Jan–Sep 2026
+run, just re-exported. A second file (`..._41154.csv`, DOGEUSDT.P 30m)
+was also re-checked and confirmed to match the already-recorded 30m
+cross-timeframe result (+0.86% computed from the log vs. +0.81% already
+in this doc — same window/symbol, just a different candle interval, not
+a genuine out-of-sample test). Neither of those was actually new
+evidence; the PENGUUSDT.P result above is the first genuine out-of-sample
+check completed so far.
+
 ## Next steps
 
 1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**,
    see above: all three timeframes (30m +0.81%, 1h +67.4%, 4h +6.85%) are
    now positive, a meaningfully better robustness signal than the
    combined config's negative 30m result.
-2. **Test on a different time window or symbol** before trusting this
-   result — every version of this strategy has been tuned against the
-   same Jan–Sep 2026 DOGEUSDT.P data, which is the single biggest
-   remaining risk to everything found so far.
-3. **Decide deliberately whether the frequency trade-off is acceptable** —
+2. ~~Test on a different symbol~~ — **done**, see "Backtest results
+   (out-of-sample — different symbol)" above: PENGUUSDT.P is only +6.9%,
+   PF 1.10, far weaker than DOGE's +67.4%/2.16. Concerning, not
+   disqualifying on its own.
+3. **Still needed: test on a different time window, same DOGEUSDT.P
+   symbol** (e.g. an earlier period than Jan–Sep 2026) — this is what
+   distinguishes "the design has a real but modest edge that DOGE
+   happened to amplify" from "the design doesn't really have an edge and
+   DOGE's specific 8 months got lucky." Do this before any live/real-money
+   decision.
+4. **Decide deliberately whether the frequency trade-off is acceptable** —
    75 trades/8 months (~1 every 3.3 days) is a real departure from the
    original ~1/day goal that started this whole strategy; if frequency
    matters independently of profitability, this needs a conscious call,
    not silent acceptance.
-4. Only after 1-3 above: consider whether this is ready for the diagnostic-
-   free finalized script, then paper trading — not before.
+5. Only after 3-4 above, **and only if both out-of-sample checks come back
+   reasonably positive**: consider a diagnostic-free finalized script,
+   then paper trading — not before, and not on the strength of the
+   DOGE-only in-sample number alone.
+6. If the time-window check also comes back much weaker than the DOGE
+   in-sample result, treat that as this design's real ceiling on this
+   symbol/timeframe (per the retirement criterion below) and pivot
+   direction — e.g. walk-forward validation in place of manual
+   spot-checks, a regime-detection-gated filter, or mean-reversion instead
+   of trend-following given DOGE's own diagnostics showed heavy chop —
+   rather than continuing to tune this same lever set.
 
 <!-- Superseded next-steps from the gap-filter-only stage, kept for
      history rather than deleted: -->
