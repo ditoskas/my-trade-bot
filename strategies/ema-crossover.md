@@ -1,24 +1,31 @@
 # EMA Crossover
 
-**Status: retired from active tuning — not viable for live/real capital.**
-Two independent out-of-sample checks both came back weak and land in the
-same range, confirming the in-sample DOGE result was mostly specific to
-its tuned window rather than a durable edge:
+**Status: retired — closed out, not viable for live/real capital, on this
+symbol, in every variant tried.** Four independent rigorous checks all
+converge on the same conclusion:
 
-| Test | Return | Trades | Win rate | Profit factor |
+| Test | Methodology | Return | Trades | Profit factor |
 |---|---|---|---|---|
-| DOGEUSDT.P 1h, Jan–Sep 2026 (in-sample, tuned against) | +67.4% | 75 | 34.7% | 2.16 |
-| PENGUUSDT.P 1h, same window (different symbol) | +6.9% | 43 | 44.2% | 1.10 |
-| DOGEUSDT.P 1h, 2023–2024 (different time window) | +5.16% | 150 | 38.0% | **1.08** |
+| DOGEUSDT.P 1h, Jan–Sep 2026 | in-sample, tuned against | +67.4% | 75 | 2.16 |
+| PENGUUSDT.P 1h, same window | out-of-sample (symbol) | +6.9% | 43 | 1.10 |
+| DOGEUSDT.P 1h, 2023–2024 | out-of-sample (time window) | +5.16% | 150 | 1.08 |
+| DOGEUSDT.P 1h, grid-searched (40/90 EMA, ADX≥25) train 2022–mid-2023 | proper train/test split | train: +182.9% / **test: +5.87%** | 43 / 35 | train: 3.29 / **test: 1.13** |
 
-Two independent axes of out-of-sample testing (symbol, and time period)
-both converge on the same weak result (~PF 1.08–1.10, low single-digit-%
-to high-single-digit-% returns) — that's a consistent signal, not one
-unlucky test. Per this file's own stated criterion (see former "Next
-steps" below): treat this design's real ceiling on DOGEUSDT.P 1h as "very
-weakly, fragile-ly profitable at best," not the +67.4% headline number,
-and don't keep tuning this same lever set (9/21 EMA + ADX + gap filter).
-**Do not promote this to paper/live trading.**
+Every check that used data the config wasn't tuned against lands in the
+same narrow band (PF ~1.0–1.15). The last one is the most damning: a
+from-scratch grid search over slower EMA pairs (15/35 through 40/90),
+multiple ADX thresholds, and gap filters — done with a genuine train/test
+split from the start, not tuned-then-tested sequentially like the earlier
+rounds — still found nothing that survives contact with unseen data. The
+best training config looked spectacular (+182.9%, PF 3.29) and still
+collapsed to PF 1.13 out of sample. **This is not a parameter problem.**
+See "Backtest results (proper walk-forward grid search)" below for the
+full methodology and top-10 table.
+
+**Do not promote any variant of EMA-crossover-on-DOGEUSDT.P to
+paper/live trading.** Mean-reversion on the same symbol was also tested
+and rejected (see below) — DOGE specifically has now failed validation
+for both major strategy families tried here.
 
 **Session resumed and concluded 2026-09-08.** The different-time-window
 check was run via a Python replica of the Pine script (not TradingView —
@@ -685,6 +692,69 @@ different axes (time vs. symbol) — strong, convergent evidence that the
 DOGE 2026 in-sample number was mostly a product of that specific 8-month
 period's price action, not a structural edge in the design itself.
 
+## Mean-reversion screen on DOGE (tested and rejected)
+
+Before trying a different EMA-crossover variant, tested whether DOGE
+might be better suited to mean-reversion instead — motivated by the
+"heavy chop" language throughout this file's diagnostics. Ran the
+`mean-reversion` skill's full statistical framework (ADF, Hurst exponent
+via R/S method, variance ratio, AR(1) half-life) against real DOGEUSDT.P
+1h futures candles, Jan 2022 – Sep 2026 (~41,000 bars, Binance public
+API).
+
+**Result: Hurst exponent 1.00 over the full period, and 100% of 337
+independent 30-day rolling windows across the entire 4.7-year history
+showed H>0.55 (trending); 0% showed H<0.45 (mean-reverting).** Not a
+marginal call — DOGE is persistently trending in every window tested,
+the opposite of mean-reverting. AR(1) half-life on the full period was
+technically positive (~105 days) but far too slow to trade, and recent
+30/60/90/180-day sub-windows showed the same trending pattern (Hurst
+0.91–1.02, ADF p 0.60–0.83, non-stationary).
+
+**This also revises the working theory**: the earlier "heavy chop"
+diagnostics weren't evidence DOGE lacks trend structure — the real data
+says the opposite. More likely, the 9/21 crossover itself was too
+fast/noisy relative to DOGE's actual (slower) trend, generating false
+reversal signals *within* a real trend rather than reacting to a
+genuinely trendless market. This is what motivated the slower-EMA grid
+search below, rather than pursuing mean-reversion further on this
+symbol.
+
+## Backtest results (proper walk-forward grid search — slower EMA variants)
+
+Tested the "9/21 was too fast" theory properly this time: a genuine
+train/test split, not sequential tune-then-test. Real DOGEUSDT 1h futures
+data (Binance public API), split into a **TRAIN window (2022-01-01 to
+2023-07-01, 18mo)** and a **TEST window (2023-07-01 to 2024-07-01,
+12mo)** that the winning config never saw during selection. Everything
+after mid-2024 (including the Jan–Sep 2026 window this strategy was
+originally tuned on) was left completely untouched as a further holdout.
+
+**Grid**: EMA pairs {9/21, 15/35, 20/50, 25/55, 30/65, 40/90} × ADX
+threshold {15, 20, 25} × gap filter {0.06%, 0.15%, disabled} = 54
+configs, each backtested on the train window only (configs with fewer
+than 15 train trades excluded as unreliable). Ranked by train profit
+factor.
+
+**Top training config**: 40/90 EMA, ADX≥25, gap≤0.06% — **train: +182.9%
+return, PF 3.29, 43 trades, 53.5% win rate.** Looked spectacular.
+
+**Same config evaluated unmodified on the test window (data it never
+saw during selection): +5.87% return, PF 1.13, 35 trades, 40.0% win
+rate.** For direct comparison, the original 9/21/ADX20/gap0.06 baseline
+on this same split: train +32.1%/PF1.21 (108 trades) → test
+-4.13%/PF1.00 (90 trades).
+
+**Conclusion — this is not a parameter problem.** A properly-conducted
+grid search, searching well beyond the original 9/21 pair specifically to
+test the "needs a slower signal" theory, still produces the same
+train-looks-great/test-collapses pattern as every other check in this
+file. The best test-set result found across this entire investigation —
+symbol variation, time-window variation, and now a real grid search — is
+PF ~1.10–1.15, which is too thin and fragile to trade. **EMA-crossover
+trend-following does not have a validated edge on DOGEUSDT.P 1h,** in any
+variant tested.
+
 ## Next steps
 
 1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**:
@@ -704,49 +774,38 @@ period's price action, not a structural edge in the design itself.
    unrealistic; the real result — PF ~1.08–1.10 with meaningful drawdown
    risk (34% from peak even in the best in-sample run) — isn't worth
    real capital either.
-5. **If revisiting DOGE/crossover strategies later**, don't restart from
-   manual TradingView spot-checks — this session's out-of-sample work
-   only became trustworthy once it moved to a scripted, repeatable
-   backtest (Python + real Binance history), which is also what the
-   `walk-forward-validation` and `vectorbt`/`backtrader` skills in this
-   repo are built for. A rolling train/test methodology from the start
-   would have caught the overfitting risk before five rounds of manual
-   tuning, not after.
-6. ~~More promising directions for this symbol... drop trend-following on
-   DOGE entirely and look at `mean-reversion` instead~~ — **tested
-   2026-09-08, real evidence says no.** Ran the `mean-reversion` skill's
-   full statistical framework (ADF, Hurst exponent via R/S method,
-   variance ratio, AR(1) half-life) against real DOGEUSDT.P 1h futures
-   candles, Jan 2022 – Sep 2026 (~41,000 bars) pulled directly from
-   Binance's public API:
-   - **Hurst exponent, full period: 1.00** — strongly trending, not
-     mean-reverting (H<0.5 would indicate mean reversion; H≈1.0 is an
-     unusually strong trending reading, not a borderline one).
-   - **Rolling Hurst across 337 independent 30-day windows spanning the
-     entire 4.7-year history: 100% showed H>0.55 (trending), 0% showed
-     H<0.45 (mean-reverting).** Not one window in nearly five years of
-     data looked mean-reverting.
-   - AR(1) half-life (full period): 2,526 hours (~105 days) — technically
-     "reverting" but far too slow to trade even if it weren't dominated by
-     noise. Recent sub-windows (last 30/60/90/180 days) all showed the
-     same pattern: half-lives of 185–675 hours, Hurst 0.91–1.02, ADF
-     p-values 0.60–0.83 (non-stationary).
-   - **Conclusion: DOGE is not a mean-reversion candidate — full stop, not
-     a marginal call.** This also revises the theory above: the earlier
-     diagnostics' "heavy chop / whipsaw" wasn't evidence of DOGE lacking
-     trend structure, since real Hurst data says the opposite (it's
-     persistently trending). More likely explanation: the 9/21 crossover
-     itself is too fast/noisy relative to DOGE's actual (slower) trend
-     behavior, generating false reversal signals *within* a real trend
-     rather than reacting to a genuinely trendless market. This points
-     back toward revisiting trend-following mechanics (e.g. a slower
-     signal, or a filter that measures trend persistence more directly
-     than ADX does) rather than abandoning trend-following for
-     mean-reversion.
-   - If mean-reversion is still worth pursuing as a strategy family, it
-     needs a symbol that actually screens as mean-reverting first — this
-     same Hurst/half-life test should gate any future candidate *before*
-     backtesting a specific design on it, not after.
+5. ~~Test mean-reversion on DOGE instead~~ — **done, rejected**: see
+   "Mean-reversion screen on DOGE" above. Hurst 1.00, not a marginal call.
+6. ~~Try slower EMA variants (the "9/21 was too fast" theory)~~ — **done
+   properly, also rejected**: see "Backtest results (proper walk-forward
+   grid search)" above. Best test-set result across a 54-config grid
+   search was PF 1.13, same weak range as everything else.
+7. **This investigation is closed for DOGEUSDT.P.** Four independent
+   rigorous checks (out-of-symbol, out-of-time-window, mean-reversion
+   screen, and a proper train/test grid search) all agree: no validated
+   edge exists here for either trend-following-via-crossover or
+   mean-reversion. Don't keep iterating on this symbol with this class of
+   signal — the evidence is consistent enough now that another round
+   would very likely just find the same PF ~1.0–1.15 ceiling again.
+8. **Where to go next, if continuing this line of work**:
+   - Run the same Hurst/ADF screen (see "Mean-reversion screen" above)
+     against *other* symbols before building anything — find one that
+     actually screens as mean-reverting, or one with a cleaner/stronger
+     trending signature than DOGE's, rather than assuming any given
+     symbol fits a chosen strategy family.
+   - If sticking with DOGE, the signal itself (EMA crossover) may just be
+     the wrong tool even though the underlying Hurst evidence says DOGE
+     trends — a crossover reacts to two lagging averages touching, not to
+     trend persistence directly. Worth trying a fundamentally different
+     trend-detection mechanism (e.g. a persistence/momentum-strength
+     measure other than ADX, or the `regime-detection` skill's own
+     methods) before concluding DOGE has no exploitable structure at all.
+   - Either way, start with a scripted train/test backtest from the
+     first iteration (as this session's grid search did), not manual
+     TradingView tuning — every method used in this file that started
+     with manual tuning-then-testing wasted several rounds before the
+     overfitting was caught; the one built with a train/test split from
+     the start caught it on the very first real test.
 
 <!-- Superseded next-steps from the gap-filter-only stage, kept for
      history rather than deleted: -->
