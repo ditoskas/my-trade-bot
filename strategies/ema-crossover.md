@@ -712,14 +712,41 @@ period's price action, not a structural edge in the design itself.
    repo are built for. A rolling train/test methodology from the start
    would have caught the overfitting risk before five rounds of manual
    tuning, not after.
-6. **More promising directions for this symbol**, given DOGE's own
-   diagnostics throughout this file showed heavy chop (155/159 trades in
-   the earliest diagnostic closed via reversal, not a real trend playing
-   out): a `regime-detection`-gated filter (only trade the crossover
-   during a genuinely detected trending regime, not ADX as an imperfect
-   proxy for one), or drop trend-following on DOGE entirely and look at
-   `mean-reversion` instead — chop-heavy price action is usually a better
-   structural fit for that family of strategy than for crossover-following.
+6. ~~More promising directions for this symbol... drop trend-following on
+   DOGE entirely and look at `mean-reversion` instead~~ — **tested
+   2026-09-08, real evidence says no.** Ran the `mean-reversion` skill's
+   full statistical framework (ADF, Hurst exponent via R/S method,
+   variance ratio, AR(1) half-life) against real DOGEUSDT.P 1h futures
+   candles, Jan 2022 – Sep 2026 (~41,000 bars) pulled directly from
+   Binance's public API:
+   - **Hurst exponent, full period: 1.00** — strongly trending, not
+     mean-reverting (H<0.5 would indicate mean reversion; H≈1.0 is an
+     unusually strong trending reading, not a borderline one).
+   - **Rolling Hurst across 337 independent 30-day windows spanning the
+     entire 4.7-year history: 100% showed H>0.55 (trending), 0% showed
+     H<0.45 (mean-reverting).** Not one window in nearly five years of
+     data looked mean-reverting.
+   - AR(1) half-life (full period): 2,526 hours (~105 days) — technically
+     "reverting" but far too slow to trade even if it weren't dominated by
+     noise. Recent sub-windows (last 30/60/90/180 days) all showed the
+     same pattern: half-lives of 185–675 hours, Hurst 0.91–1.02, ADF
+     p-values 0.60–0.83 (non-stationary).
+   - **Conclusion: DOGE is not a mean-reversion candidate — full stop, not
+     a marginal call.** This also revises the theory above: the earlier
+     diagnostics' "heavy chop / whipsaw" wasn't evidence of DOGE lacking
+     trend structure, since real Hurst data says the opposite (it's
+     persistently trending). More likely explanation: the 9/21 crossover
+     itself is too fast/noisy relative to DOGE's actual (slower) trend
+     behavior, generating false reversal signals *within* a real trend
+     rather than reacting to a genuinely trendless market. This points
+     back toward revisiting trend-following mechanics (e.g. a slower
+     signal, or a filter that measures trend persistence more directly
+     than ADX does) rather than abandoning trend-following for
+     mean-reversion.
+   - If mean-reversion is still worth pursuing as a strategy family, it
+     needs a symbol that actually screens as mean-reverting first — this
+     same Hurst/half-life test should gate any future candidate *before*
+     backtesting a specific design on it, not after.
 
 <!-- Superseded next-steps from the gap-filter-only stage, kept for
      history rather than deleted: -->
