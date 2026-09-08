@@ -755,6 +755,43 @@ PF ~1.10–1.15, which is too thin and fragile to trade. **EMA-crossover
 trend-following does not have a validated edge on DOGEUSDT.P 1h,** in any
 variant tested.
 
+## BTC-trend alignment filter (tested, didn't help)
+
+Brainstormed idea: since altcoins are broadly beta-correlated to BTC,
+gate DOGE entries on BTC's own trend direction — only take a DOGE long
+when BTC is also trending up (BTC DI+ > DI-), only short when BTC is
+trending down (DI- > DI+). Tested as a fixed overlay on the two configs
+already selected above (the grid-search winner and the original
+baseline), on the same train/test split — deliberately *not* a new grid
+search over the filter's own parameters (BTC ADX threshold, lookback,
+etc.), to avoid reintroducing the exact multiple-comparison overfitting
+risk this file already spent a lot of effort eliminating.
+
+| Config | Without filter (test) | **With BTC direction filter (test)** |
+|---|---|---|
+| Grid-search winner (40/90/ADX25) | +5.87%, PF 1.13 | +0.47%, **PF 1.04** |
+| Original baseline (9/21/ADX20) | -4.13%, PF 1.00 | -20.34%, **PF 0.77** |
+
+**Result: the filter didn't help — it was neutral-to-negative in both
+cases**, and notably worse for the already-weak baseline. Trade count
+roughly halved in both configs without a compensating quality
+improvement in the trades that remained. Likely explanation: BTC's raw
+DI+/DI- (no strength threshold, just "which side is currently larger")
+is a noisy binary signal, not a real "BTC is trending" measure, and DOGE
+already reflects BTC's influence organically through its own price
+action — filtering on a second, separately-lagging indicator computed
+from a different symbol doesn't obviously add information under this
+implementation.
+
+**This doesn't kill the broader idea, just this specific version of it.**
+Untested variants that might behave differently: requiring BTC's own ADX
+to clear a real strength threshold (not just DI+ vs DI- direction) before
+gating anything; using BTC alignment as position-size scaling rather than
+a hard entry/skip gate; or gating on BTC's regime (trending vs. ranging)
+rather than direction specifically (idea #2 from the brainstorm, not yet
+tested). Any of these would need the same train/test discipline as
+everything else in this file before being trusted.
+
 ## Next steps
 
 1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**:
