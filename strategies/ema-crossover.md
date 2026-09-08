@@ -1,30 +1,35 @@
 # EMA Crossover
 
-**Status:** backtested, **out-of-sample check (different symbol) shows the
-edge does not transfer at anywhere near the same strength — do not go
-live on this yet.** In-sample best result (DOGEUSDT.P, ADX filter alone,
-no minimum hold): +67.4%, profit factor 2.16. Tested on PENGUUSDT.P, same
-1h timeframe, same Jan–Sep 2026 window: **+6.9%, profit factor 1.10** —
-still net positive but far weaker, and PF 1.10 is thin enough to flip
-negative on a slightly different cutoff. See "Backtest results
-(out-of-sample — different symbol)" below. This is more consistent with
-"DOGE's specific 8 months did a lot of the work" than "this design has a
-transferable edge." The different-time-window check (same DOGE symbol, an
-earlier period) still hasn't been run — worth doing before concluding
-this design has no edge at all, since PENGU's own chop/trend character
-could explain part of the gap rather than the design itself.
+**Status: retired from active tuning — not viable for live/real capital.**
+Two independent out-of-sample checks both came back weak and land in the
+same range, confirming the in-sample DOGE result was mostly specific to
+its tuned window rather than a durable edge:
 
-**⏸ Session paused here (2026-09-08).** Next: run the still-missing
-different-time-window check (DOGEUSDT.P 1h, an earlier period than
-Jan–Sep 2026), then decide based on both out-of-sample results together
-whether to keep tuning, retire this approach per the criterion in Next
-steps, or explore a structurally different direction (walk-forward
-validation instead of manual spot-checks; a regime-detection-gated
-filter; or mean-reversion instead of trend-following, given DOGE's own
-diagnostics showed heavy chop). The diagnostic script is still sitting at
-`strategies/ema-crossover-diagnostic.tmp.pine` (untracked scratch file,
-not committed) — reusable as-is, just point TradingView at a different
-date range before pasting it in.
+| Test | Return | Trades | Win rate | Profit factor |
+|---|---|---|---|---|
+| DOGEUSDT.P 1h, Jan–Sep 2026 (in-sample, tuned against) | +67.4% | 75 | 34.7% | 2.16 |
+| PENGUUSDT.P 1h, same window (different symbol) | +6.9% | 43 | 44.2% | 1.10 |
+| DOGEUSDT.P 1h, 2023–2024 (different time window) | +5.16% | 150 | 38.0% | **1.08** |
+
+Two independent axes of out-of-sample testing (symbol, and time period)
+both converge on the same weak result (~PF 1.08–1.10, low single-digit-%
+to high-single-digit-% returns) — that's a consistent signal, not one
+unlucky test. Per this file's own stated criterion (see former "Next
+steps" below): treat this design's real ceiling on DOGEUSDT.P 1h as "very
+weakly, fragile-ly profitable at best," not the +67.4% headline number,
+and don't keep tuning this same lever set (9/21 EMA + ADX + gap filter).
+**Do not promote this to paper/live trading.**
+
+**Session resumed and concluded 2026-09-08.** The different-time-window
+check was run via a Python replica of the Pine script (not TradingView —
+TradingView's free-plan ~5,000-bar cap on 1h candles couldn't reach back
+far enough), pulling real DOGEUSDT 1h futures candles directly from
+Binance's public API for 2023–2024. See "Backtest results (out-of-sample
+— different time window)" below for methodology and the sanity-check
+notes on how closely it was verified against the known-good Pine
+behavior. See "Next steps" at the bottom for where this points next
+(pivoting away from this specific design, not just another parameter
+nudge).
 ## Overview
 
 Single-symbol DOGEUSDT.P, **20x leverage**, 1h candles. Core thesis: price
@@ -632,38 +637,89 @@ a genuine out-of-sample test). Neither of those was actually new
 evidence; the PENGUUSDT.P result above is the first genuine out-of-sample
 check completed so far.
 
+## Backtest results (out-of-sample — different time window)
+
+TradingView's free/Basic plan caps historical bars at roughly 5,000,
+which on 1h candles only reaches ~208 days back — not far enough before
+Jan 2026 to test a genuinely earlier period. Instead of testing at a
+coarser timeframe to work around the cap, this check pulled real
+DOGEUSDT 1h **futures** candles directly from Binance's public klines API
+(`fapi.binance.com/fapi/v1/klines` — no auth, no bar-count limit) and
+replicated the Pine script's exact logic in Python: same 9/21 EMA
+crossover, same Wilder DMI/ADX (14/14, threshold 20), same 0.06% gap
+filter, same margin-based stop (80%)/trail-activate (100%)/trail-offset
+(20%) at 5x leverage and 10%-of-equity margin per trade, same 0.1%
+commission per fill. Two months of extra warm-up data (Nov 2022 onward)
+were fetched but excluded from results, so EMA/ADX indicators were
+already stable by the actual test start.
+
+**Window**: 2023-01-01 to 2025-01-01 (2 full years) — entirely before,
+and non-overlapping with, the Jan–Sep 2026 window every other version of
+this strategy was tuned and tested against.
+
+| Metric | DOGE 2026 (in-sample) | **DOGE 2023–2024 (out-of-sample)** |
+|---|---|---|
+| Total return | +67.4% | **+5.16%** |
+| Trades | 75 | 150 |
+| Win rate | 34.7% | 38.0% |
+| Profit factor | 2.16 | **1.08** |
+| Reversal exits | 70 (avg n/a) | 126 (avg -0.50) |
+| Stop/trail exits | 5 | 24 (avg +7.59) |
+
+**Methodology honesty check**: this is a from-scratch Python replica, not
+the actual Pine backtest engine, so it's an approximation rather than a
+byte-for-byte match — spot-checked the output trade log
+(`ema_crossover_oos_trades.csv`, scratch file, not committed) against the
+known shape of the real Pine per-trade logs (small reversal-exit PnLs,
+larger stop/trail-exit PnLs consistent with the 80%/100%-of-margin
+sizing) and it matches structurally. The one known simplification: stop
+and trailing-stop exits are evaluated with a simple sequential per-bar
+rule (check fixed stop first, then trail activation/update, using each
+bar's high/low) rather than Pine's own intrabar order simulation — same
+caveat already noted in this file's "Backtest notes" section for the
+TradingView runs themselves, not something newly introduced here.
+
+**Conclusion**: this result and the PENGUUSDT.P result above land in the
+same weak range (PF ~1.08 vs ~1.10) despite testing two completely
+different axes (time vs. symbol) — strong, convergent evidence that the
+DOGE 2026 in-sample number was mostly a product of that specific 8-month
+period's price action, not a structural edge in the design itself.
+
 ## Next steps
 
-1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**,
-   see above: all three timeframes (30m +0.81%, 1h +67.4%, 4h +6.85%) are
-   now positive, a meaningfully better robustness signal than the
-   combined config's negative 30m result.
-2. ~~Test on a different symbol~~ — **done**, see "Backtest results
-   (out-of-sample — different symbol)" above: PENGUUSDT.P is only +6.9%,
-   PF 1.10, far weaker than DOGE's +67.4%/2.16. Concerning, not
-   disqualifying on its own.
-3. **Still needed: test on a different time window, same DOGEUSDT.P
-   symbol** (e.g. an earlier period than Jan–Sep 2026) — this is what
-   distinguishes "the design has a real but modest edge that DOGE
-   happened to amplify" from "the design doesn't really have an edge and
-   DOGE's specific 8 months got lucky." Do this before any live/real-money
-   decision.
-4. **Decide deliberately whether the frequency trade-off is acceptable** —
-   75 trades/8 months (~1 every 3.3 days) is a real departure from the
-   original ~1/day goal that started this whole strategy; if frequency
-   matters independently of profitability, this needs a conscious call,
-   not silent acceptance.
-5. Only after 3-4 above, **and only if both out-of-sample checks come back
-   reasonably positive**: consider a diagnostic-free finalized script,
-   then paper trading — not before, and not on the strength of the
-   DOGE-only in-sample number alone.
-6. If the time-window check also comes back much weaker than the DOGE
-   in-sample result, treat that as this design's real ceiling on this
-   symbol/timeframe (per the retirement criterion below) and pivot
-   direction — e.g. walk-forward validation in place of manual
-   spot-checks, a regime-detection-gated filter, or mean-reversion instead
-   of trend-following given DOGE's own diagnostics showed heavy chop —
-   rather than continuing to tune this same lever set.
+1. ~~Re-run the cross-timeframe check with `minHoldBars=1`~~ — **done**:
+   all three timeframes (30m +0.81%, 1h +67.4%, 4h +6.85%) were positive
+   on the same in-sample window — this looked like a good robustness
+   signal at the time, but see below for why it wasn't enough.
+2. ~~Test on a different symbol~~ — **done**: PENGUUSDT.P, +6.9%, PF 1.10.
+3. ~~Test on a different time window~~ — **done**: DOGEUSDT.P 2023–2024,
+   +5.16%, PF 1.08. Converges with the symbol check — **this design does
+   not have a durable, transferable edge on DOGEUSDT.P 1h.** Stop tuning
+   this specific lever set (9/21 EMA + ADX + gap filter) — every
+   remaining variation of it is very likely to land in the same weak
+   range, not because of bad luck on any one test but because two
+   independent out-of-sample axes already agree.
+4. **Don't promote to paper/live trading.** The original ~30%/day
+   aspirational target (see Targets above) was already flagged as
+   unrealistic; the real result — PF ~1.08–1.10 with meaningful drawdown
+   risk (34% from peak even in the best in-sample run) — isn't worth
+   real capital either.
+5. **If revisiting DOGE/crossover strategies later**, don't restart from
+   manual TradingView spot-checks — this session's out-of-sample work
+   only became trustworthy once it moved to a scripted, repeatable
+   backtest (Python + real Binance history), which is also what the
+   `walk-forward-validation` and `vectorbt`/`backtrader` skills in this
+   repo are built for. A rolling train/test methodology from the start
+   would have caught the overfitting risk before five rounds of manual
+   tuning, not after.
+6. **More promising directions for this symbol**, given DOGE's own
+   diagnostics throughout this file showed heavy chop (155/159 trades in
+   the earliest diagnostic closed via reversal, not a real trend playing
+   out): a `regime-detection`-gated filter (only trade the crossover
+   during a genuinely detected trending regime, not ADX as an imperfect
+   proxy for one), or drop trend-following on DOGE entirely and look at
+   `mean-reversion` instead — chop-heavy price action is usually a better
+   structural fit for that family of strategy than for crossover-following.
 
 <!-- Superseded next-steps from the gap-filter-only stage, kept for
      history rather than deleted: -->
