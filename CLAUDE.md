@@ -295,7 +295,7 @@ enables it.
     order response only if fills comes back empty. That fallback path is itself a known remaining
     race-condition gap (if the trade list hasn't caught up yet when queried) — a retry/poll loop
     would close it, not built yet, worth doing before this is trusted with real money.
-  - **Two real bugs found and fixed live in production, 2026-09-08** (`btc-high-risk` had been
+  - **Three real bugs found and fixed live in production, 2026-09-08** (`btc-high-risk` had been
     enabled since 2026-09-06 but had never once logged a `DECISION` event — traced via
     `journalctl`/Mongo on the deployed server, see `ansible/`):
     1. **`configureOneWayPositionMode()` crashed strategy startup entirely whenever the operator
@@ -329,9 +329,34 @@ enables it.
        own-order-history scoping keeps the strategy from *managing* a manual position; it cannot
        keep a manual position's exposure fully isolated from the strategy's own orders on the same
        symbol/account. A separate sub-account is the real fix if true isolation is ever needed.
-       Typechecks and builds clean (`tsc`, not just `--noEmit`, on `@trade-bot/engine`); not yet
-       re-verified live against the actual deployed server as of this note — do that before
-       considering this closed.
+       Typechecks and builds clean (`tsc`, not just `--noEmit`, on `@trade-bot/engine`).
+    3. **The actual root cause of "never logged a `DECISION`" turned out to be neither of the above:
+       Binance's futures WebSocket (`wss://fstream.binance.com`) silently delivers nothing to this
+       deployment's host.** After fixing 1-2 above and restarting, still zero `DECISION` entries
+       past a full candle-close boundary. Isolated with a plain Node `WebSocket` one-liner run
+       directly on the server, independent of this codebase: the futures WS completes its handshake
+       (`open` fires) but never delivers a single `message` event, reproduced on two different kline
+       intervals; the same test against Binance's **spot** WebSocket (`stream.binance.com`)
+       delivered real-time messages instantly, and futures **REST** calls (`fapi.binance.com`) had
+       already been working the whole time (that's how warm-up history and `configureSymbol`
+       succeeded). The host is on Contabo (AS51167) — consistent with Binance applying stricter
+       anti-bot/ToS filtering to futures market-data WebSocket specifically for some datacenter/VPS
+       IP ranges while leaving REST mostly unaffected. This is a Binance-side network policy, not a
+       bug reachable from this codebase, and explains the original symptom far better than bugs 1-2
+       do: `btc-high-risk` had never received a single live futures candle since being enabled,
+       independent of either fix above. Fixed by working around it rather than depending on it:
+       `marketData/binanceFuturesKlinePoller.ts` (`BinanceFuturesKlinePoller`) polls the same public
+       REST klines endpoint `warmUp` already uses (`fetchHistoricalFuturesCandles`) every 20s and
+       fires `onClosedCandle` only when the most-recently-closed candle's close time advances past
+       the previous poll's — same `start()`/`stop()`/`onClosedCandle`/`onError` shape as the
+       WebSocket stream it replaces (`marketData/binanceFuturesKlineStream.ts`, kept as-is, not
+       deleted — still used by the read-only `btcHighRiskLiveShadow.ts` parity-diagnostic script,
+       which may not hit the same host-specific block if ever run from a different machine).
+       Verified against live Binance data that a `limit=2` REST response puts the closed candle at
+       index 0 and the still-forming one last, matching the poller's selection logic. Typechecks and
+       builds clean. **Not yet re-verified live against the actual deployed server as of this
+       note** — restart `trade-bot-engine` after deploying this and confirm real `DECISION` entries
+       start appearing in `audit_log` before considering this closed.
 - [x] **Phase 4 — Live dashboard.** Done 2026-09-05, verified live in a real browser.
   - **The engine became a genuinely long-running process.** Before this it was a one-shot script
     that replayed a fixed candle batch and exited (Phase 2/3b). `apps/engine/src/index.ts` now
