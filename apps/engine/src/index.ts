@@ -16,7 +16,7 @@ import { EventPublisher } from "./events/redisPublisher";
 import { fetchHistoricalCandles } from "./marketData/binancePublic";
 import { BinanceKlineStream } from "./marketData/binanceKlineStream";
 import { fetchHistoricalFuturesCandles } from "./marketData/binanceFuturesPublic";
-import { BinanceFuturesKlineStream } from "./marketData/binanceFuturesKlineStream";
+import { BinanceFuturesKlinePoller } from "./marketData/binanceFuturesKlinePoller";
 import { reconcile } from "./reconciliation/reconcile";
 import { StrategyRegistry, type RegisteredStrategy } from "./registry";
 import { CapitalLedger } from "./risk/capitalLedger";
@@ -322,7 +322,12 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
   );
   await runner.initialize();
 
-  const stream = new BinanceFuturesKlineStream({
+  // REST polling, not the WebSocket stream — found live 2026-09-08 that
+  // wss://fstream.binance.com opens but never delivers a message from
+  // this deployment's host (Contabo, AS51167), while spot WS and futures
+  // REST both work fine from the same host. See
+  // marketData/binanceFuturesKlinePoller.ts's comment for the full story.
+  const stream = new BinanceFuturesKlinePoller({
     symbol: BTC_HIGH_RISK_SYMBOL,
     interval: "1h",
     onClosedCandle: async (candle) => {
@@ -331,21 +336,21 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
       }
       await runner.onCandle(candle);
     },
-    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 1h futures stream error:`, error.message),
+    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 1h futures poll error:`, error.message),
   });
   stream.start();
 
-  const auxStream4h = new BinanceFuturesKlineStream({
+  const auxStream4h = new BinanceFuturesKlinePoller({
     symbol: BTC_HIGH_RISK_SYMBOL,
     interval: "4h",
     onClosedCandle: (candle) => {
       algorithm.onAuxCandle(BTC_HIGH_RISK_AUX_TAG_4H, candle);
     },
-    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 4h futures stream error:`, error.message),
+    onError: (error) => console.error(`[engine] ${BTC_HIGH_RISK_SYMBOL} 4h futures poll error:`, error.message),
   });
   auxStream4h.start();
 
-  console.log(`[engine] strategy "${doc.slug}" live on ${BTC_HIGH_RISK_SYMBOL} futures (1h candles + 4h confirmation)`);
+  console.log(`[engine] strategy "${doc.slug}" live on ${BTC_HIGH_RISK_SYMBOL} futures (1h candles + 4h confirmation, REST-polled)`);
   return { doc, runner, stream, auxStreams: [auxStream4h] };
 }
 
