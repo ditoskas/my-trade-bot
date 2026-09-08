@@ -82,6 +82,16 @@ export class BinanceFuturesKlinePoller {
       }
 
       this.lastClosedCandleCloseTime = closeTimeMs;
+      // Unconditional, independent of whatever the strategy decides -
+      // StrategyRunner.onCandle only writes a DECISION audit entry on a
+      // non-HOLD signal, so an empty audit_log doesn't by itself prove
+      // candles aren't being delivered (a real, easy-to-make mistake this
+      // codebase's own debugging hit live). This line is the actual
+      // liveness signal: it fires on every genuinely new close regardless
+      // of what the strategy does with it.
+      console.log(
+        `[poller] ${this.options.symbol} ${this.options.interval} new closed candle @ ${lastClosed.closeTime.toISOString()}, close=${lastClosed.close.toString()}`,
+      );
       await this.options.onClosedCandle(lastClosed);
     } catch (error) {
       this.options.onError?.(error as Error);
