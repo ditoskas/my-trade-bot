@@ -67,52 +67,100 @@ export class StrategyRunner {
   ) {}
 
   // Call once, right after construction and before the candle stream
-  // starts. Reconciles in-memory position state against the real exchange
-  // when the broker supports it (see Broker.getOpenPosition), instead of
-  // always assuming flat — the property this restores is enterPosition's
+  // starts. Reconstructs in-memory position state from THIS STRATEGY'S OWN
+  // order history in Mongo — never from a raw "what does the exchange show"
+  // query — so the property this restores is enterPosition's
   // `!this.openPosition` guard (and therefore "only one open position per
   // strategy") staying true across a process restart, not just within one
-  // continuous run. PaperBroker doesn't implement getOpenPosition, so this
-  // is a no-op for paper strategies — nothing to recover, positions are
-  // ephemeral there by construction.
+  // continuous run.
   //
-  // The recovered position's fee/margin/entry-time bookkeeping is
-  // necessarily approximate: a position-risk query returns current state,
-  // not the original order's details, which aren't recoverable this way.
+  // Deliberately NOT "adopt whatever position the exchange reports," which
+  // is what this used to do via Broker.getOpenPosition. A futures strategy
+  // can share a real account with the operator's own manual trading on the
+  // same symbol (see strategies/btc-high-risk.md) — blindly adopting the
+  // exchange's aggregate position would make the strategy start managing,
+  // and on exit reduce-closing, a position it never opened. Our own
+  // `orders` collection is authoritative for "what did THIS strategy
+  // actually open," independent of anything else on the same account/
+  // symbol. As a side benefit this also fixes the old approximate
+  // fee/margin/entry-time bookkeeping noted below — the original order's
+  // real fill data is right there in Mongo, not estimated from current
+  // exchange state.
   async initialize(): Promise<void> {
-    if (!this.broker.getOpenPosition) {
-      return;
-    }
     const symbol = this.strategyDoc.symbols[0];
-    const real = await this.broker.getOpenPosition(symbol);
-    if (!real) {
-      return;
+
+    const lastEntryOrder = await ordersCollection(this.db)
+      .find({ strategyId: this.strategyDoc._id, symbol, reduceOnly: { $ne: true }, status: "FILLED" })
+      .sort({ submittedAt: -1 })
+      .limit(1)
+      .next();
+
+    if (lastEntryOrder) {
+      const alreadyClosed = await tradesCollection(this.db).findOne({
+        strategyId: this.strategyDoc._id,
+        entryOrderIds: lastEntryOrder._id,
+      });
+
+      const quantity = toDecimalJs(lastEntryOrder.executedQuantity);
+      if (!alreadyClosed && !quantity.isZero()) {
+        const entryPrice = toDecimalJs(lastEntryOrder.cumulativeQuoteQuantity).div(quantity);
+        const entryFee = lastEntryOrder.fills.reduce(
+          (sum, fill) => sum.plus(toDecimalJs(fill.commission)),
+          new Decimal(0),
+        );
+        const leverage = this.strategyDoc.riskLimits.maxLeverage;
+
+        this.openPosition = {
+          side: lastEntryOrder.side === "BUY" ? "LONG" : "SHORT",
+          quantity,
+          entryPrice,
+          marginReserved: leverage > 0 ? quantity.mul(entryPrice).div(leverage) : quantity.mul(entryPrice),
+          entryFee,
+          entryOrderId: lastEntryOrder._id,
+          entryTime: lastEntryOrder.submittedAt ?? lastEntryOrder.intentCreatedAt,
+        };
+
+        console.log(
+          `[strategy:${this.strategyDoc.slug}] recovered its own open ${this.openPosition.side} position from ` +
+            `order history (qty ${quantity.toString()} @ ${entryPrice.toString()}) — not touching anything else ` +
+            `on this account/symbol.`,
+        );
+        await this.audit("POSITION_RECOVERED", {
+          side: this.openPosition.side,
+          quantity: quantity.toString(),
+          entryPrice: entryPrice.toString(),
+          source: "own_order_history",
+        });
+      }
     }
 
-    console.warn(
-      `[strategy:${this.strategyDoc.slug}] found a real open ${real.side} position on the exchange at startup ` +
-        `(qty ${real.quantity.toString()} @ ${real.entryPrice.toString()}) — recovering it so a new entry can't ` +
-        `stack on top of it.`,
-    );
-
-    const entryPrice = toDecimalJs(real.entryPrice);
-    const quantity = toDecimalJs(real.quantity);
-    const leverage = this.strategyDoc.riskLimits.maxLeverage;
-    this.openPosition = {
-      side: real.side,
-      quantity,
-      entryPrice,
-      marginReserved: leverage > 0 ? quantity.mul(entryPrice).div(leverage) : quantity.mul(entryPrice),
-      entryFee: new Decimal(0),
-      entryOrderId: new ObjectId(),
-      entryTime: new Date(),
-    };
-
-    await this.audit("POSITION_RECOVERED", {
-      side: real.side,
-      quantity: real.quantity.toString(),
-      entryPrice: real.entryPrice.toString(),
-    });
+    // Purely informational cross-check against the real exchange, when the
+    // broker supports it — never authoritative, never changes
+    // this.openPosition. Surfaces exposure on this symbol that this
+    // strategy did not open (e.g. a manual trade on the same account) so
+    // it's visible in the logs, without the strategy ever acting on it.
+    if (this.broker.getOpenPosition) {
+      try {
+        const real = await this.broker.getOpenPosition(symbol);
+        const ownQuantity = this.openPosition?.quantity ?? new Decimal(0);
+        const ownSide = this.openPosition?.side ?? null;
+        const realQuantity = real ? toDecimalJs(real.quantity) : new Decimal(0);
+        const realSide = real?.side ?? null;
+        if (!realQuantity.equals(ownQuantity) || realSide !== ownSide) {
+          console.warn(
+            `[strategy:${this.strategyDoc.slug}] exchange shows ` +
+              `${real ? `${real.side} ${real.quantity.toString()}` : "no"} position on ${symbol}, but this ` +
+              `strategy's own records account for only ${ownQuantity.toString()}${ownSide ? ` ${ownSide}` : ""} — ` +
+              `the difference is exposure this strategy did not open and will not manage.`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[strategy:${this.strategyDoc.slug}] couldn't cross-check the real exchange position at startup:`,
+          (error as Error).message,
+        );
+      }
+    }
   }
 
   // Used by the dashboard's disable control — refuses to tear down a
@@ -195,6 +243,16 @@ export class StrategyRunner {
     }
   }
 
+  // Not reduceOnly, by design — an entry must be able to establish real
+  // exposure. Known, inherent limitation on a real account: Binance
+  // one-way position mode nets ALL orders for a symbol into a single
+  // position, so if the operator holds a manual position on the same
+  // symbol in the opposite direction, this order will reduce or flip it —
+  // there is no way to keep the strategy's exposure separate from manual
+  // exposure on the same symbol/account at the exchange level (only
+  // initialize()'s and exitPosition's own-order-history tracking can be
+  // scoped that way, not entries). A separate sub-account is the real fix
+  // if true isolation is needed.
   private async enterPosition(side: PositionSide, candle: Candle, riskFraction?: number): Promise<void> {
     this.riskManager.checkCanEnter(this.strategyDoc);
 

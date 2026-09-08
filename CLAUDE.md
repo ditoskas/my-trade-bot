@@ -295,6 +295,43 @@ enables it.
     order response only if fills comes back empty. That fallback path is itself a known remaining
     race-condition gap (if the trade list hasn't caught up yet when queried) — a retry/poll loop
     would close it, not built yet, worth doing before this is trusted with real money.
+  - **Two real bugs found and fixed live in production, 2026-09-08** (`btc-high-risk` had been
+    enabled since 2026-09-06 but had never once logged a `DECISION` event — traced via
+    `journalctl`/Mongo on the deployed server, see `ansible/`):
+    1. **`configureOneWayPositionMode()` crashed strategy startup entirely whenever the operator
+       had a manual position (with a resting order) open on the same account/symbol.** Binance's
+       `changePositionMode` endpoint returns `-4067` ("Position side cannot be changed if there
+       exists open orders") for *any* call while orders/positions exist — even one that wouldn't
+       actually change anything, i.e. the account was already one-way. That endpoint is called on
+       every strategy startup (not just once ever), so an unrelated manual trade was enough to make
+       `startBtcHighRiskRuntime` throw before the candle streams were ever created, on every
+       restart. Fixed in `broker/binanceFuturesBroker.ts`: `configureOneWayPositionMode()` now
+       reads the current mode via `getPositionMode()` first and only calls `changePositionMode` if
+       it's actually not already one-way — a genuine mode *change* while orders are open is still
+       correctly rejected, this only skips the redundant call.
+    2. **`StrategyRunner.initialize()` used to adopt whatever position the exchange reported as its
+       own** (`Broker.getOpenPosition`), unconditionally. On a real account the operator also
+       trades manually, this meant a manual position would get silently adopted and then managed
+       (and, on exit, reduce-closed) by the strategy — explicitly not wanted, per the operator.
+       Fixed: `initialize()` now reconstructs the strategy's own open position purely from its own
+       `orders`/`trades` records in Mongo (the last `FILLED` non-`reduceOnly` order for this
+       strategy+symbol not yet matched by a closed `trades` entry) — authoritative for "what did
+       *this strategy* actually open," independent of anything else on the same account/symbol.
+       `Broker.getOpenPosition` is now used only as a non-authoritative, purely informational
+       cross-check logged at startup (flags exposure on the symbol the strategy doesn't recognize
+       as its own), never to set position state. Side benefit: entry price/fee/time are now the
+       real values from the original order, not an approximation from current exchange state.
+       **Known remaining limitation, inherent to Binance one-way position mode, not fixable in
+       software**: `enterPosition`'s entry order is deliberately not `reduceOnly` (it has to be
+       able to establish real exposure), and one-way mode nets *all* orders for a symbol into a
+       single account-level position — so an entry in the opposite direction to an existing manual
+       position will still reduce or flip it at the exchange. Only `initialize()`/`exitPosition`'s
+       own-order-history scoping keeps the strategy from *managing* a manual position; it cannot
+       keep a manual position's exposure fully isolated from the strategy's own orders on the same
+       symbol/account. A separate sub-account is the real fix if true isolation is ever needed.
+       Typechecks and builds clean (`tsc`, not just `--noEmit`, on `@trade-bot/engine`); not yet
+       re-verified live against the actual deployed server as of this note — do that before
+       considering this closed.
 - [x] **Phase 4 — Live dashboard.** Done 2026-09-05, verified live in a real browser.
   - **The engine became a genuinely long-running process.** Before this it was a one-shot script
     that replayed a fixed candle batch and exited (Phase 2/3b). `apps/engine/src/index.ts` now

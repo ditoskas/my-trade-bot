@@ -68,7 +68,32 @@ export class BinanceFuturesBroker implements Broker {
     });
   }
 
+  // Checks the account's current mode before ever calling changePositionMode
+  // — found live: Binance's changePositionMode endpoint returns -4067
+  // ("Position side cannot be changed if there exists open orders") for ANY
+  // call while open orders/positions exist, even one that wouldn't actually
+  // change anything (the account already one-way). Since that endpoint is
+  // called on every strategy startup (not just once ever, see below), an
+  // operator's own manual position with a resting order on the same symbol
+  // was enough to make the account's real one-way setting unreachable to
+  // verify, aborting the whole runtime construction on every restart. A
+  // genuine mode CHANGE while orders are open is still correctly rejected
+  // by Binance (and still surfaces here) — this only skips the redundant,
+  // unnecessary call when there's nothing to change.
   async configureOneWayPositionMode(): Promise<void> {
+    try {
+      const current = await this.client.getPositionMode();
+      const dualSidePosition = asRecord(current.data)["dualSidePosition"];
+      if (dualSidePosition === false || dualSidePosition === "false") {
+        return; // already one-way — nothing to do
+      }
+    } catch (error) {
+      console.warn(
+        "[broker:binance-futures] couldn't read current position mode, attempting to set it anyway:",
+        (error as Error).message,
+      );
+    }
+
     try {
       await this.client.changePositionMode("false");
     } catch (error) {
