@@ -64,6 +64,17 @@ export class StrategyRunner {
     // Optional — a strategy still runs correctly with no live dashboard
     // feed at all (see EventPublisher.connect's fail-open behavior).
     private readonly publisher?: EventPublisher,
+    // Opt-in, not default-on: a HOLD DECISION row is written on every
+    // candle when true, which is the only reliable per-strategy proof of
+    // liveness the Decision tab/audit_log can show for a selective
+    // strategy (see CLAUDE.md's btc-high-risk health-check memory — the
+    // poller's journalctl line was previously the only such signal).
+    // Deliberately opt-in rather than global: strategies on fast candle
+    // intervals (the 1-minute demo strategies) would otherwise write
+    // ~1,440 rows/day each into audit_log with no retention/pruning in
+    // place. index.ts only passes true for btc-high-risk (1h+4h candles,
+    // ~24-30 rows/day).
+    private readonly logHoldDecisions = false,
   ) {}
 
   // Call once, right after construction and before the candle stream
@@ -141,7 +152,7 @@ export class StrategyRunner {
     // it's visible in the logs, without the strategy ever acting on it.
     if (this.broker.getOpenPosition) {
       try {
-        const real = await this.broker.getOpenPosition(symbol);
+        const real = await this.broker.getOpenPosition(symbol, this.openPosition?.side);
         const ownQuantity = this.openPosition?.quantity ?? new Decimal(0);
         const ownSide = this.openPosition?.side ?? null;
         const realQuantity = real ? toDecimalJs(real.quantity) : new Decimal(0);
@@ -181,6 +192,9 @@ export class StrategyRunner {
 
     const { signal, riskFraction, forceReenter } = this.algorithm.decide(candle, positionState);
     if (signal === "HOLD") {
+      if (this.logHoldDecisions) {
+        await this.audit("DECISION", { symbol: candle.symbol, signal, close: candle.close.toString() });
+      }
       return;
     }
 
@@ -244,15 +258,17 @@ export class StrategyRunner {
   }
 
   // Not reduceOnly, by design — an entry must be able to establish real
-  // exposure. Known, inherent limitation on a real account: Binance
-  // one-way position mode nets ALL orders for a symbol into a single
-  // position, so if the operator holds a manual position on the same
-  // symbol in the opposite direction, this order will reduce or flip it —
-  // there is no way to keep the strategy's exposure separate from manual
-  // exposure on the same symbol/account at the exchange level (only
-  // initialize()'s and exitPosition's own-order-history tracking can be
-  // scoped that way, not entries). A separate sub-account is the real fix
-  // if true isolation is needed.
+  // exposure. `positionSide` is passed through so BinanceFuturesBroker can
+  // tag it correctly under Hedge Mode (see its placeOrder comment) — that's
+  // what actually keeps this strategy's LONG/SHORT exposure exchange-side
+  // separate from the operator's own manual position on the same symbol,
+  // as long as the account is in Hedge Mode. Under One-way mode Binance
+  // still nets everything for a symbol into one position regardless of
+  // what this broker sends — there's no way around that exchange-side
+  // limitation in One-way mode (initialize()'s and exitPosition's own-
+  // order-history tracking only scope what THIS strategy manages, not what
+  // exists on the exchange). A separate sub-account is the fallback if
+  // Hedge Mode is ever not an option.
   private async enterPosition(side: PositionSide, candle: Candle, riskFraction?: number): Promise<void> {
     this.riskManager.checkCanEnter(this.strategyDoc);
 
@@ -310,6 +326,7 @@ export class StrategyRunner {
       side: orderSide,
       type: "MARKET",
       quantity: fromDecimalJs(quantity),
+      positionSide: side,
     });
 
     await ordersCollection(this.db).updateOne(
@@ -387,6 +404,7 @@ export class StrategyRunner {
       type: "MARKET",
       quantity: fromDecimalJs(position.quantity),
       reduceOnly: true,
+      positionSide: position.side,
     });
 
     await ordersCollection(this.db).updateOne(

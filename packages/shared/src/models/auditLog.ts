@@ -20,7 +20,13 @@ export type AuditEventType =
   // enableStrategy/disableStrategy) — distinct from pause/resume, which
   // only blocks new entries while the runner keeps running.
   | "ENABLED"
-  | "DISABLED";
+  | "DISABLED"
+  // A catalog strategy's start() threw during engine boot (or a later
+  // enable) and was NOT registered — it is not running, will not process
+  // candles, and nothing else about the process crashed (see index.ts's
+  // catalog loop and CLAUDE.md's 2026-09-12 incident writeup for why this
+  // exists: an uncaught startup error used to fail silently instead).
+  | "STRATEGY_START_FAILED";
 
 export type AuditSource = "engine" | "chatops" | "ui";
 

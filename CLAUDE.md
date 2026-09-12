@@ -357,6 +357,73 @@ enables it.
        builds clean. **Not yet re-verified live against the actual deployed server as of this
        note** — restart `trade-bot-engine` after deploying this and confirm real `DECISION` entries
        start appearing in `audit_log` before considering this closed.
+    - **Follow-up, re-verified 2026-09-09**: poller lines were firing hourly as expected on the
+      deployed server; `audit_log` legitimately showed zero `DECISION` entries at that point — a
+      real gap in how liveness was diagnosable, not a bug (see the 2026-09-12 incident below for
+      why this bit us).
+    - **A fourth real bug, found live 2026-09-12: forcing One-way mode took the engine down for
+      ~34 hours, completely undetected.** `configureOneWayPositionMode()` (bug #1 above) only
+      special-cased Binance's *"already in that mode"* error codes (`-4059`/`-4046`); it did not
+      handle the case where the account genuinely is NOT in the target mode AND has open orders —
+      Binance correctly rejects that with `-4067`, and the call re-threw. That throw came from
+      inside `startBtcHighRiskRuntime`, called from `main()`'s catalog loop with no per-strategy
+      try/catch, and propagated to `main().catch(...)`, which only logs `"[engine] fatal error:"`
+      and sets `process.exitCode = 1` — it never calls `process.exit()`. Because the demo
+      strategies earlier in the catalog array had already opened live connections keeping the
+      event loop alive, the process never actually died: systemd saw a perfectly healthy
+      `active (running)` service for the full ~34 hours, while `btc-high-risk` had simply never
+      started — no poller line, no `DECISION` entries beyond the original `ENABLED` row from
+      2026-09-06. Traced live via `sudo systemctl status trade-bot-engine` (showed the `-4067`
+      error in its last log lines, timestamped exactly at the service's own start time) and
+      `sudo journalctl --since "24 hours ago"` (came back completely empty, confirming nothing had
+      logged since). Two fixes, both real and both deployed:
+      1. **Stopped forcing One-way mode at all.** The operator's real account trades manually in
+         Hedge (dual-side) Position Mode on purpose and wants that left alone — one-way mode was
+         never actually required, it was carried over from the original design assumption in this
+         section's own intro. `BinanceFuturesBroker.configureOneWayPositionMode()` is gone,
+         replaced by `detectPositionMode()` — read-only, calls `getPositionMode()` once (cached),
+         and never calls `changePositionMode` at all. `placeOrder` now adapts to whichever mode is
+         actually active: in Hedge Mode it sends `positionSide` (`"LONG"`/`"SHORT"`, now threaded
+         through from `StrategyRunner.enterPosition`/`exitPosition` via a new `PlaceOrderRequest.
+         positionSide` field) and omits `reduceOnly` (Binance rejects that param outright in Hedge
+         Mode — closing is implicit: an opposite-side order on the same `positionSide` reduces it);
+         in One-way mode it's the reverse (`reduceOnly` as before, no `positionSide` — Binance
+         rejects an explicit `LONG`/`SHORT` there with `-4061`). `getOpenPosition` also updated:
+         Hedge Mode returns one exchange-side entry per `positionSide` for the same symbol, so it
+         now accepts an optional `side` to disambiguate the strategy's own position from an
+         unrelated manual one sitting on the other side of the same symbol — `StrategyRunner`
+         passes its own recorded side at the one call site that uses this (the informational
+         startup cross-check). Practical upshot, not just a crash fix: Hedge Mode is what actually
+         keeps `btc-high-risk`'s exchange-side exposure separate from the operator's own manual
+         positions on the same symbol — One-way mode nets everything into a single position
+         regardless of what this broker sends (still true, still documented on `enterPosition`).
+      2. **`main()`'s catalog loop no longer lets one strategy's fatal startup error silently
+         half-break the process.** Both the boot loop and the dashboard's `enableStrategy` now go
+         through a shared `startCatalogEntryOrAlert()`: a thrown startup error is caught, logged
+         loudly, written to `audit_log` as a new `STRATEGY_START_FAILED` event (added to
+         `AuditEventType` in `packages/shared`), and every other catalog entry still gets its turn
+         instead of the whole loop aborting. `apps/chatops/src/alerts.ts`'s proactive watcher now
+         pages on `STRATEGY_START_FAILED` the same way it already does for `KILL_SWITCH`/
+         `RECONCILIATION_MISMATCH` — a strategy failing to start now reaches Telegram unprompted
+         instead of requiring someone to notice a quiet dashboard.
+      Separately, `StrategyRunner` gained an opt-in `logHoldDecisions` constructor flag (default
+      `false`) — when true, a `HOLD` signal now writes a `DECISION` row too, not just non-`HOLD`
+      signals (see `onCandle`'s early-return, unchanged for the two demo strategies). Only
+      `btc-high-risk`'s runner passes `true`: at its 1h/4h candle cadence that's ~24-30 extra rows/
+      day and gives the Decision tab/`audit_log` a direct, per-strategy liveness signal instead of
+      relying solely on the poller's journalctl line. Deliberately NOT enabled for the demo
+      strategies, which tick every 1 minute (`~1,440 rows/day each, no retention/pruning exists).
+      Verified live: restarted `trade-bot-engine` after deploying — logged
+      `"btc-high-risk" detected Binance position mode: Hedge (dual-side) — leaving it as-is"` and
+      `"btc-high-risk" configured on Binance futures REAL ACCOUNT (hedge mode, CROSSED, 100x)"`
+      with no `-4067`, confirming the actual root cause is fixed on the real account. Typechecks
+      and builds clean (`tsc`, not just `--noEmit`) across `packages/shared`, `apps/engine`, and
+      `apps/chatops`. **Not yet observed producing a real filled order under Hedge Mode** — the
+      dev machine's clock was ~7.3s ahead of Binance's server time when this was built (same class
+      of issue as the original 2026-09-05 clock-skew note above), and this connector hardcodes
+      `Date.now()` for every signed request with no override, so a live testnet open+close couldn't
+      be completed before deploying. Worth confirming the next real `btc-high-risk` entry actually
+      fills correctly rather than assuming the code-review-level trace above is sufficient forever.
 - [x] **Phase 4 — Live dashboard.** Done 2026-09-05, verified live in a real browser.
   - **The engine became a genuinely long-running process.** Before this it was a one-shot script
     that replayed a fixed candle batch and exited (Phase 2/3b). `apps/engine/src/index.ts` now

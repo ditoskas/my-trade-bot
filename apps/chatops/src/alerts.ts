@@ -2,7 +2,7 @@ import { auditLogCollection, type AuditEventType } from "@trade-bot/shared";
 import type { Db } from "mongodb";
 import type { Telegraf } from "telegraf";
 
-const ALERT_EVENT_TYPES: AuditEventType[] = ["RECONCILIATION_MISMATCH", "KILL_SWITCH"];
+const ALERT_EVENT_TYPES: AuditEventType[] = ["RECONCILIATION_MISMATCH", "KILL_SWITCH", "STRATEGY_START_FAILED"];
 const POLL_INTERVAL_MS = 30_000;
 
 // Proactive alerting (Phase 6) — chatops is the only service holding

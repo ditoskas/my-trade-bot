@@ -42,8 +42,10 @@ export interface StrategyDecision {
 // Deliberately named StrategyAlgorithm, not Strategy — @trade-bot/shared's
 // Strategy type is the Mongo document (config/lifecycle/capital); this is
 // the pluggable decision logic a strategy document points at. One position
-// per symbol at a time (matches the one-way position mode decision in
-// CLAUDE.md Phase 3b) — a strategy is flat, long, or short, never both.
+// per symbol at a time, by this strategy's own design (StrategyRunner's
+// openPosition tracking) — a strategy is flat, long, or short, never both —
+// independent of whatever position mode the Binance account itself happens
+// to be in (see BinanceFuturesBroker.detectPositionMode).
 export interface StrategyAlgorithm {
   readonly slug: string;
   readonly symbol: string;

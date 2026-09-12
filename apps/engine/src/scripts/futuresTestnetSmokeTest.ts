@@ -26,8 +26,8 @@ if (!apiKey || !apiSecret) {
 async function main(): Promise<void> {
   const broker = new BinanceFuturesBroker({ apiKey: apiKey!, apiSecret: apiSecret!, useTestnet: true });
 
-  console.log("[smoke] configuring one-way position mode (account-wide)...");
-  await broker.configureOneWayPositionMode();
+  const isHedgeMode = await broker.detectPositionMode();
+  console.log(`[smoke] detected position mode: ${isHedgeMode ? "Hedge (dual-side)" : "One-way"} — leaving it as-is`);
 
   console.log(`[smoke] configuring ${symbol}: ISOLATED margin, ${leverage}x leverage...`);
   await broker.configureSymbol(symbol, leverage, "ISOLATED");
@@ -39,10 +39,13 @@ async function main(): Promise<void> {
     side: "BUY",
     type: "MARKET",
     quantity: toDecimal128(quantity),
+    // Only actually sent by BinanceFuturesBroker when the account is in
+    // Hedge Mode — harmless to always pass, see placeOrder's comment.
+    positionSide: "LONG",
   });
   logOrderResult("open", openResult);
 
-  console.log(`[smoke] closing the position (reduceOnly SELL)...`);
+  console.log(`[smoke] closing the position (SELL, reduceOnly under One-way / same positionSide under Hedge)...`);
   const closeResult = await broker.placeOrder({
     clientOrderId: `fsmoke-close-${Date.now()}`,
     symbol,
@@ -50,6 +53,7 @@ async function main(): Promise<void> {
     type: "MARKET",
     quantity: toDecimal128(quantity),
     reduceOnly: true,
+    positionSide: "LONG",
   });
   logOrderResult("close", closeResult);
 }

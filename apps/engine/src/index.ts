@@ -273,7 +273,14 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
     : new PaperBroker();
 
   if (broker instanceof BinanceFuturesBroker) {
-    await broker.configureOneWayPositionMode();
+    // Detect only — never force a position-mode change. See
+    // BinanceFuturesBroker.detectPositionMode's comment for the 2026-09-12
+    // incident this replaced (forcing One-way took the engine down for
+    // ~34h whenever the operator had a manual Hedge-Mode position open).
+    const isHedgeMode = await broker.detectPositionMode();
+    console.log(
+      `[engine] "${doc.slug}" detected Binance position mode: ${isHedgeMode ? "Hedge (dual-side)" : "One-way"} — leaving it as-is`,
+    );
     // CROSSED, not ISOLATED (which is what this strategy was actually
     // designed and backtested around — see strategies/btc-high-risk.md's
     // "Going live" note). Switched because the real account this was
@@ -294,7 +301,7 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
     await broker.configureSymbol(BTC_HIGH_RISK_SYMBOL, BTC_HIGH_RISK_LEVERAGE, "CROSSED");
     console.log(
       `[engine] "${doc.slug}" configured on Binance futures ${effectiveUseTestnet ? "TESTNET" : "REAL ACCOUNT"} ` +
-        `(one-way mode, CROSSED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
+        `(${isHedgeMode ? "hedge" : "one-way"} mode, CROSSED, ${BTC_HIGH_RISK_LEVERAGE}x)`,
     );
   }
 
@@ -311,6 +318,12 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
 
   // Dedicated RiskManager instance with a 100x ceiling — every other
   // strategy still gets the default RiskManager()'s 20x ceiling.
+  // logHoldDecisions: true — this strategy is selective (real signals are
+  // rare) and runs on 1h candles, so a HOLD row roughly hourly is cheap and
+  // is the liveness signal the Decision tab/audit_log otherwise can't show
+  // (see StrategyRunner's constructor comment). Not set for the demo
+  // strategies (startDemoStrategy, default false) — they tick every 1
+  // minute, where the same logging would add ~1,440 rows/day each.
   const runner = new StrategyRunner(
     db,
     doc,
@@ -319,6 +332,7 @@ async function startBtcHighRiskRuntime(db: Db, doc: Strategy, publisher: EventPu
     new RiskManager(BTC_HIGH_RISK_LEVERAGE),
     new CapitalLedger(db),
     publisher,
+    true,
   );
   await runner.initialize();
 
@@ -391,11 +405,60 @@ async function main(): Promise<void> {
     },
   ];
 
+  // Wraps a catalog entry's start() so one strategy's fatal startup error
+  // can't silently leave the process half-broken. Before this (2026-09-12
+  // incident, see CLAUDE.md Phase 3b), an uncaught throw from
+  // startBtcHighRiskRuntime propagated straight out of this loop, past
+  // main()'s own try/catch (which only logs and sets process.exitCode,
+  // never calls process.exit) — since strategies earlier in the catalog had
+  // already opened live connections keeping the event loop alive, the
+  // process kept running under systemd looking perfectly healthy while
+  // btc-high-risk had simply never started, for ~34 hours, with nothing
+  // paging anyone. Now: the failure is caught, logged loudly, written to
+  // audit_log as STRATEGY_START_FAILED (which chatops's alert watcher pages
+  // on, same as KILL_SWITCH/RECONCILIATION_MISMATCH), and every other
+  // catalog entry still gets its turn.
+  async function startCatalogEntryOrAlert(
+    entry: StrategyCatalogEntry,
+    doc: Strategy,
+  ): Promise<RegisteredStrategy | null> {
+    try {
+      return await entry.start(db, doc, publisher);
+    } catch (error) {
+      const message = (error as Error).message;
+      console.error(`[engine] FATAL: strategy "${doc.slug}" failed to start — not registered:`, error);
+      try {
+        await auditLogCollection(db).insertOne({
+          _id: new ObjectId(),
+          strategyId: doc._id,
+          eventType: "STRATEGY_START_FAILED",
+          source: "engine",
+          payload: { error: message },
+          timestamp: new Date(),
+        });
+      } catch (auditError) {
+        console.error(
+          `[engine] also failed to write STRATEGY_START_FAILED for "${doc.slug}":`,
+          (auditError as Error).message,
+        );
+      }
+      await publisher.publish({
+        type: "STRATEGY_START_FAILED",
+        strategyId: doc._id.toHexString(),
+        strategySlug: doc.slug,
+        payload: { error: message },
+      });
+      return null;
+    }
+  }
+
   for (const entry of catalog) {
     const doc = await entry.getOrCreateDoc(db);
     if (doc.enabled) {
-      const registered = await entry.start(db, doc, publisher);
-      registry.register(registered);
+      const registered = await startCatalogEntryOrAlert(entry, doc);
+      if (registered) {
+        registry.register(registered);
+      }
     } else {
       console.log(
         `[engine] strategy "${doc.slug}" exists but is disabled — not starting (enable it from the dashboard)`,
@@ -445,7 +508,10 @@ async function main(): Promise<void> {
       return { ok: false, error: `unknown strategy "${slug}"` };
     }
     const doc = await entry.getOrCreateDoc(db);
-    const registered = await entry.start(db, doc, publisher);
+    const registered = await startCatalogEntryOrAlert(entry, doc);
+    if (!registered) {
+      return { ok: false, error: `"${slug}" failed to start — see logs / audit_log's STRATEGY_START_FAILED entry` };
+    }
     registered.doc.enabled = true;
     registered.doc.updatedAt = new Date();
     await strategiesCollection(db).updateOne(

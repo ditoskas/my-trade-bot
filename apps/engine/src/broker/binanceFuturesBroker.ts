@@ -49,10 +49,13 @@ function sleep(ms: number): Promise<void> {
 // file relies on.
 //
 // Same Broker interface as PaperBroker/BinanceBroker — StrategyRunner
-// never knows the difference. MARKET orders only, one-way position mode
-// only (configureOneWayPositionMode). Margin mode and leverage are
-// configured once per symbol via configureSymbol before trading it, not
+// never knows the difference. MARKET orders only. Margin mode and leverage
+// are configured once per symbol via configureSymbol before trading it, not
 // passed per order — Binance doesn't support varying them per-order anyway.
+//
+// Position mode (One-way vs Hedge/dual-side) is READ, never WRITTEN, by
+// this class — see detectPositionMode's comment for why. placeOrder adapts
+// to whichever mode the account is actually in.
 //
 // Unlike spot, a futures order's own REST response doesn't include
 // commission per fill — placeOrder makes one extra signed call
@@ -61,6 +64,7 @@ function sleep(ms: number): Promise<void> {
 export class BinanceFuturesBroker implements Broker {
   private readonly client: UMFutures;
   private readonly stepSizeCache = new Map<string, Decimal>();
+  private hedgeMode: boolean | null = null;
 
   constructor(options: BinanceFuturesBrokerOptions) {
     this.client = new UMFutures(options.apiKey, options.apiSecret, {
@@ -68,39 +72,47 @@ export class BinanceFuturesBroker implements Broker {
     });
   }
 
-  // Checks the account's current mode before ever calling changePositionMode
-  // — found live: Binance's changePositionMode endpoint returns -4067
-  // ("Position side cannot be changed if there exists open orders") for ANY
-  // call while open orders/positions exist, even one that wouldn't actually
-  // change anything (the account already one-way). Since that endpoint is
-  // called on every strategy startup (not just once ever, see below), an
-  // operator's own manual position with a resting order on the same symbol
-  // was enough to make the account's real one-way setting unreachable to
-  // verify, aborting the whole runtime construction on every restart. A
-  // genuine mode CHANGE while orders are open is still correctly rejected
-  // by Binance (and still surfaces here) — this only skips the redundant,
-  // unnecessary call when there's nothing to change.
-  async configureOneWayPositionMode(): Promise<void> {
+  // Read-only — this used to actively FORCE the account into One-way mode
+  // on every strategy startup (changePositionMode("false")). Removed
+  // 2026-09-12 after that call took the engine down for ~34 hours
+  // undetected: Binance's changePositionMode returns -4067 ("Position side
+  // cannot be changed if there exists open orders") whenever the account
+  // genuinely isn't already in the target mode AND has open orders/
+  // positions on it — exactly the operator's normal situation (their own
+  // manual Hedge-Mode trading on this account/symbol). That -4067 was
+  // uncaught, threw out of startBtcHighRiskRuntime inside index.ts's
+  // catalog loop, and left the strategy silently never started (see the
+  // incident writeup in CLAUDE.md Phase 3b — the process itself didn't
+  // die, since the demo strategies ahead of it in the catalog kept the
+  // event loop alive, so systemd never noticed either).
+  //
+  // The operator wants their own manual positions on this account left
+  // completely alone regardless of what mode the account is in, so this
+  // broker no longer tries to CHANGE the account's position mode at all —
+  // it only detects and adapts to whatever mode is already active (see
+  // placeOrder/getOpenPosition). Cached after the first successful read;
+  // call again to force a re-check (e.g. if the operator changes the mode
+  // by hand mid-run).
+  async detectPositionMode(): Promise<boolean> {
     try {
       const current = await this.client.getPositionMode();
       const dualSidePosition = asRecord(current.data)["dualSidePosition"];
-      if (dualSidePosition === false || dualSidePosition === "false") {
-        return; // already one-way — nothing to do
-      }
+      this.hedgeMode = dualSidePosition === true || dualSidePosition === "true";
     } catch (error) {
       console.warn(
-        "[broker:binance-futures] couldn't read current position mode, attempting to set it anyway:",
+        "[broker:binance-futures] couldn't read current position mode, assuming One-way:",
         (error as Error).message,
       );
+      this.hedgeMode = false;
     }
+    return this.hedgeMode;
+  }
 
-    try {
-      await this.client.changePositionMode("false");
-    } catch (error) {
-      if (!isAlreadyInModeError(error)) {
-        throw error;
-      }
+  private async isHedgeMode(): Promise<boolean> {
+    if (this.hedgeMode === null) {
+      await this.detectPositionMode();
     }
+    return this.hedgeMode as boolean;
   }
 
   async configureSymbol(symbol: string, leverage: number, marginMode: MarginMode): Promise<void> {
@@ -115,23 +127,37 @@ export class BinanceFuturesBroker implements Broker {
   }
 
   // Real exchange truth, not Mongo/in-memory state — see the Broker
-  // interface comment on why this exists. One-way position mode only
-  // (matches configureOneWayPositionMode), so there's at most one position
-  // per symbol to find; positionAmt is signed (positive = long, negative =
-  // short, "0" = flat).
-  async getOpenPosition(symbol: string): Promise<OpenPositionInfo | null> {
+  // interface comment on why this exists. In Hedge Mode, Binance reports a
+  // separate entry per positionSide (LONG/SHORT) for the same symbol — e.g.
+  // this strategy's own position alongside the operator's unrelated manual
+  // one — so `side`, when given, picks out the entry the caller actually
+  // means; omitted, the first non-flat entry wins (matches the old One-way-
+  // only behavior, where there's only ever one). positionAmt is signed
+  // (positive = long, negative = short, "0" = flat) regardless of mode.
+  async getOpenPosition(symbol: string, side?: "LONG" | "SHORT"): Promise<OpenPositionInfo | null> {
     const response = await this.client.getPositionInformationV3({ symbol });
     const positions = Array.isArray(response.data) ? response.data.map(asRecord) : [];
-    const position = positions.find((entry) => entry["symbol"] === symbol);
+    const position = positions.find((entry) => {
+      if (entry["symbol"] !== symbol) {
+        return false;
+      }
+      const positionAmt = new Decimal(readString(entry, "positionAmt") ?? "0");
+      if (positionAmt.isZero()) {
+        return false;
+      }
+      if (!side) {
+        return true;
+      }
+      // "BOTH" is what Binance reports in One-way mode, where there's no
+      // separate LONG/SHORT entry to disambiguate anyway.
+      const positionSideRaw = readString(entry, "positionSide");
+      return positionSideRaw === side || positionSideRaw === "BOTH";
+    });
     if (!position) {
       return null;
     }
 
     const positionAmt = new Decimal(readString(position, "positionAmt") ?? "0");
-    if (positionAmt.isZero()) {
-      return null;
-    }
-
     return {
       side: positionAmt.isPositive() ? "LONG" : "SHORT",
       quantity: toDecimal128(positionAmt.abs().toString()),
@@ -147,13 +173,22 @@ export class BinanceFuturesBroker implements Broker {
     const stepSize = await this.getStepSize(request.symbol);
     const quantity = roundToStepSize(toDecimalJs(request.quantity), stepSize);
 
+    // Hedge Mode requires positionSide on every order and rejects reduceOnly
+    // outright (-1106) — closing is implicit there: an order on the same
+    // positionSide but the opposite side reduces it, no flag needed. One-way
+    // mode is the reverse: positionSide must be omitted (Binance defaults it
+    // to "BOTH" and rejects an explicit LONG/SHORT with -4061), reduceOnly is
+    // how a close is expressed. See detectPositionMode's comment for why
+    // this reads the mode instead of forcing one.
+    const isHedge = await this.isHedgeMode();
     const response = await this.client.newOrder(request.symbol, request.side, "MARKET", {
       // Passed as a string, not Number() — unlike @binance/spot, this
       // connector doesn't force a numeric type, so there's no float
       // round-trip on the way out at all.
       quantity: quantity.toString(),
       newClientOrderId: request.clientOrderId,
-      reduceOnly: request.reduceOnly ? "true" : undefined,
+      reduceOnly: !isHedge && request.reduceOnly ? "true" : undefined,
+      positionSide: isHedge ? request.positionSide : undefined,
     });
 
     const data = asRecord(response.data);

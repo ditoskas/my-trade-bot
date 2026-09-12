@@ -19,8 +19,15 @@ export interface PlaceOrderRequest {
   type: OrderType;
   quantity: Decimal128;
   price?: Decimal128;
-  // Futures-only — PaperBroker and BinanceBroker (spot) ignore it.
+  // Futures-only — PaperBroker and BinanceBroker (spot) ignore it. Only
+  // actually sent to Binance when the account is in Hedge (dual-side)
+  // Position Mode — see BinanceFuturesBroker.placeOrder.
   reduceOnly?: boolean;
+  // Futures-only — the position this order belongs to (not the order's
+  // buy/sell direction). Required by Binance whenever the account is in
+  // Hedge Mode; ignored (and not sent) in One-way mode, where a position
+  // is implicitly "BOTH". PaperBroker and BinanceBroker (spot) ignore it.
+  positionSide?: "LONG" | "SHORT";
 }
 
 export interface OrderResult {
@@ -51,5 +58,10 @@ export interface Broker {
   // at a time" guarantee breaking down. PaperBroker doesn't implement
   // this (its positions are ephemeral by construction — nothing to
   // recover); BinanceFuturesBroker does, via a real position-risk query.
-  getOpenPosition?(symbol: string): Promise<OpenPositionInfo | null>;
+  // `side`: in Hedge Mode the exchange can report a LONG and a SHORT
+  // position on the same symbol simultaneously (e.g. this strategy's own
+  // position alongside the operator's unrelated manual one) — pass the
+  // side the caller actually wants to check to disambiguate; omitted, the
+  // first non-flat position found is returned.
+  getOpenPosition?(symbol: string, side?: "LONG" | "SHORT"): Promise<OpenPositionInfo | null>;
 }
