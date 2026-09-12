@@ -1,0 +1,122 @@
+//@version=6
+strategy(
+     "EMA Crossover (Diagnostic v8, ADX only, no min-hold)",
+     overlay=true,
+     default_qty_type=strategy.fixed,
+     default_qty_value=0,
+     initial_capital=1000,
+     currency=currency.USDT,
+     margin_long = 20.0,
+     margin_short = 20.0,
+     commission_type = strategy.commission.percent,time
+     commission_value = 0.1,
+     process_orders_on_close = true)
+
+fastLen                = input.int(9, "Fast EMA length")
+slowLen                = input.int(21, "Slow EMA length")
+adxLen                 = input.int(14, "ADX/DI length")
+adxSmoothing           = input.int(14, "ADX smoothing")
+adxThreshold           = input.float(20, "Min ADX (trend strength)")
+leverage               = input.float(5, "Leverage", minval = 1, maxval = 20, step = 1)
+marginPct              = input.float(10, "Margin % of equity per trade")
+stopMarginPct          = input.float(80, "Stop-loss: % of margin lost")
+trailActivateMarginPct = input.float(100, "Trailing-stop activation: % of margin gained")
+trailOffsetMarginPct   = input.float(20, "Trailing-stop offset: % of margin given back")
+maxGapPct              = input.float(0.06, "Max fast/slow gap at cross (% of price)")
+minHoldBars            = input.int(1, "Minimum bars held before a reversal can close position (1 = disabled)")
+
+fastEMA = ta.ema(close, fastLen)
+slowEMA = ta.ema(close, slowLen)
+gapPct  = math.abs(fastEMA - slowEMA) / close * 100
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxSmoothing)
+
+var int entryBarIndex = na
+barsHeld   = na(entryBarIndex) ? na : bar_index - entryBarIndex
+canReverse = na(entryBarIndex) or barsHeld >= minHoldBars
+
+rawLongSignal  = ta.crossover(fastEMA, slowEMA) and adxVal >= adxThreshold and gapPct <= maxGapPct
+rawShortSignal = ta.crossunder(fastEMA, slowEMA) and adxVal >= adxThreshold and gapPct <= maxGapPct
+
+longSignal  = rawLongSignal and (strategy.position_size >= 0 or canReverse)
+shortSignal = rawShortSignal and (strategy.position_size <= 0 or canReverse)
+
+f_qty(entryClose) =>
+    margin = strategy.equity * marginPct / 100
+    (margin * leverage) / entryClose
+
+stopDistPct          = stopMarginPct / 100 / leverage
+trailActivateDistPct = trailActivateMarginPct / 100 / leverage
+trailOffsetDistPct   = trailOffsetMarginPct / 100 / leverage
+
+var string entryDir      = na
+var float  entryPrice    = na
+var string entryTimeStr  = na
+var float  entryEquity   = na
+var float  entryGapPct   = na
+var float  entryAdx      = na
+var int    entryBarAtOpen = na
+
+f_logClose(reason) =>
+    pnl = strategy.equity - entryEquity
+    heldBars = bar_index - entryBarAtOpen
+    log.info("CLOSE {0} | entryTime={1} entryPrice={2} | exitTime={3} exitPrice={4} | pnl={5} | reason={6} | gapPct={7} | adx={8} | barsHeld={9}",
+         entryDir, entryTimeStr, str.tostring(entryPrice, "#.#####"),
+         str.format("{0,date,yyyy-MM-dd HH:mm}", time), str.tostring(close, "#.#####"),
+         str.tostring(pnl, "#.##"), reason,
+         str.tostring(entryGapPct, "#.####"), str.tostring(entryAdx, "#.##"),
+         str.tostring(heldBars))
+
+f_logEntry(dir, entryClose, qty) =>
+    log.info("ENTRY {0} @ {1} | time={2} | equityBefore={3} | qty={4} | gapPct={5} | adx={6}",
+         dir, str.tostring(entryClose, "#.#####"),
+         str.format("{0,date,yyyy-MM-dd HH:mm}", time),
+         str.tostring(strategy.equity, "#.##"), str.tostring(qty, "#.##"),
+         str.tostring(gapPct, "#.####"), str.tostring(adxVal, "#.##"))
+
+if strategy.position_size == 0 and not na(entryDir)
+    f_logClose("STOP_OR_TRAIL")
+    entryDir := na
+
+if longSignal
+    if not na(entryDir)
+        f_logClose("REVERSAL")
+    entryPriceNow      = close
+    qty                = f_qty(entryPriceNow)
+    stopPrice          = entryPriceNow * (1 - stopDistPct)
+    trailActivatePrice = entryPriceNow * (1 + trailActivateDistPct)
+    trailOffsetTicks   = (entryPriceNow * trailOffsetDistPct) / syminfo.mintick
+    f_logEntry("LONG", entryPriceNow, qty)
+    strategy.entry("Long", strategy.long, qty = qty)
+    strategy.exit("Bracket-L", from_entry = "Long", stop = stopPrice, trail_price = trailActivatePrice, trail_offset = trailOffsetTicks)
+    entryBarIndex   := bar_index
+    entryDir        := "LONG"
+    entryPrice      := entryPriceNow
+    entryTimeStr    := str.format("{0,date,yyyy-MM-dd HH:mm}", time)
+    entryEquity     := strategy.equity
+    entryGapPct     := gapPct
+    entryAdx        := adxVal
+    entryBarAtOpen  := bar_index
+
+if shortSignal
+    if not na(entryDir)
+        f_logClose("REVERSAL")
+    entryPriceNow      = close
+    qty                = f_qty(entryPriceNow)
+    stopPrice          = entryPriceNow * (1 + stopDistPct)
+    trailActivatePrice = entryPriceNow * (1 - trailActivateDistPct)
+    trailOffsetTicks   = (entryPriceNow * trailOffsetDistPct) / syminfo.mintick
+    f_logEntry("SHORT", entryPriceNow, qty)
+    strategy.entry("Short", strategy.short, qty = qty)
+    strategy.exit("Bracket-S", from_entry = "Short", stop = stopPrice, trail_price = trailActivatePrice, trail_offset = trailOffsetTicks)
+    entryBarIndex   := bar_index
+    entryDir        := "SHORT"
+    entryPrice      := entryPriceNow
+    entryTimeStr    := str.format("{0,date,yyyy-MM-dd HH:mm}", time)
+    entryEquity     := strategy.equity
+    entryGapPct     := gapPct
+    entryAdx        := adxVal
+    entryBarAtOpen  := bar_index
+
+plot(fastEMA, "Fast EMA", color = color.teal)
+plot(slowEMA, "Slow EMA", color = color.orange)
+plot(adxVal, "ADX", color = color.purple, display = display.data_window)

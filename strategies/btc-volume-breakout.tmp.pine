@@ -1,0 +1,161 @@
+//@version=6
+strategy(
+     "BTC Volume Breakout (20/2.0x/ATR14x1.5/2R, 10x, commission-aware sizing)",
+     overlay=true,
+     default_qty_type=strategy.fixed,
+     default_qty_value=0,
+     margin_long=10,
+     margin_short=10,
+     commission_type=strategy.commission.percent,
+     commission_value=0.05,
+     process_orders_on_close=true)
+
+donchianLookback = input.int(20, "Donchian lookback (bars)", minval=1)
+volLookback       = input.int(20, "Volume average lookback (bars)", minval=1)
+volMultiplier     = input.float(2.0, "Volume multiplier (\"heavy volume\")", minval=0.1, step=0.1)
+atrPeriod         = input.int(14, "ATR period", minval=1)
+atrStopMult       = input.float(1.5, "ATR stop multiplier", minval=0.1, step=0.1)
+rewardRiskRatio   = input.float(2.0, "Reward:risk ratio", minval=0.1, step=0.1)
+riskPct           = input.float(1.0, "Risk % of equity per trade", minval=0.01, step=0.1)
+leverage          = input.float(10, "Leverage (see margin_long/short note above)", minval=1, maxval=125, step=1)
+// Must match commission_value above by hand - see strategies/btc-volume-breakout.md's
+// Position sizing note on why this can't just reference commission_value directly.
+// 0.05 = Binance USDT-M futures standard taker fee (VIP0, no BNB discount) -
+// the earlier 0.1 default was borrowed from PaperBroker's conservative
+// assumption, not the real exchange fee, and was overstating commission
+// drag by ~2x (see backtest notes in strategies/btc-volume-breakout.md).
+commissionPctPerSide = input.float(0.05, "Commission % per side (keep in sync with commission_value)", minval=0, step=0.01)
+
+// Date filter, defaulted wide open (2020-2030) so a plain re-run reproduces
+// the full baseline. A genuine out-of-sample split (2025, before the tuned
+// 2026-01-01 to 2026-09-08 window) turned out unreachable on this account's
+// 5,000-bar history cap for 1h candles (~208 days back = mid-Feb 2026 at
+// best, still inside the tuned window) - see strategies/btc-volume-breakout.md's
+// Backtest notes. Left in place for whenever deeper history becomes
+// available (a plan upgrade), rather than ripped out.
+backtestStart = input.time(timestamp("2020-01-01 00:00 +0000"), "Backtest start (UTC)")
+backtestEnd   = input.time(timestamp("2030-01-01 00:00 +0000"), "Backtest end (UTC)")
+inDateRange = time >= backtestStart and time <= backtestEnd
+
+// Excludes the current bar from both the level and the volume average, so
+// neither is contaminated by the breakout bar itself.
+upperLevel = ta.highest(high[1], donchianLookback)
+lowerLevel = ta.lowest(low[1], donchianLookback)
+volAvg     = ta.sma(volume[1], volLookback)
+atrValue   = ta.atr(atrPeriod)
+
+heavyVolume    = volume > volAvg * volMultiplier
+// Close-beyond-level, not wick-through (changed after backtesting - see
+// strategies/btc-volume-breakout.md's Backtest notes): a wick that
+// immediately reverses is exactly the fakeout the volume filter is meant
+// to catch, and wick-through was letting some of those through anyway
+// since a big wick can spike volume too.
+
+// Found live: longs profitable, shorts the drag - BTC ran a strong uptrend
+// (~62k to 92k+) across most of the tested window, so short breakdowns were
+// fighting the prevailing trend while long breakouts rode it. Two separate,
+// independently-toggleable experiments rather than one entangled change:
+// (1) allowShorts=false isolates long-only performance cleanly (run this
+//     first - default is OFF, so a plain re-run is already long-only).
+// (2) useTrendFilter, once (1) confirms longs are the strong side, tests an
+//     actual fix rather than just disabling shorts permanently: require the
+//     breakout to align with a longer-term trend (price vs a 200-period SMA)
+//     before taking it, in EITHER direction - a short only fires below the
+//     trend MA (real downtrend context), a long only above it. This is a
+//     genuine fix attempt (both sides get more selective, not just shorts
+//     turned off), not a hack that only helps because it happens to remove
+//     the losing side of this one sample.
+allowShorts    = input.bool(false, "Allow short entries (OFF isolates long-only)")
+useTrendFilter = input.bool(false, "Require trend alignment (price vs trend MA) - proposed short fix")
+trendMALen     = input.int(200, "Trend filter SMA length", minval=1)
+trendMA        = ta.sma(close, trendMALen)
+trendAllowsLong  = not useTrendFilter or close > trendMA
+trendAllowsShort = not useTrendFilter or close < trendMA
+
+longCondition  = close > upperLevel and heavyVolume and strategy.position_size == 0 and inDateRange and trendAllowsLong
+shortCondition = allowShorts and close < lowerLevel and heavyVolume and strategy.position_size == 0 and inDateRange and trendAllowsShort
+
+// Nets round-trip commission out of the risk budget up front, so the
+// REALIZED loss on a stop-out (price move + commission) lands at ~riskPct
+// of equity, not price-move-alone at riskPct with commission on top of
+// that. Fixes the -46.4% first-run bug found via this same log: the naive
+// qty = riskAmount / stopDistance let commission on the resulting oversized
+// notional (2-2.5x equity, since a 1.5xATR stop is only ~0.3-0.5% of BTC's
+// price on 1h) cost roughly another 50% of the intended 1% risk, per trade.
+f_qtyForRisk(stopDistance, entryPrice) =>
+    riskAmount = strategy.equity * riskPct / 100
+    commissionCost = entryPrice * (commissionPctPerSide / 100) * 2
+    denom = stopDistance + commissionCost
+    denom > 0 ? riskAmount / denom : 0.0
+
+// The qty formula above sizes qty off (stopDistance + commissionCost), so
+// a stop-out's realized loss (price move + commission) lands at exactly
+// riskAmount. But that same qty applied against a naive 2x-stopDistance
+// target under-delivers: win = qty*(2*stopDistance - commissionCost), which
+// is NOT 2x riskAmount once commissionCost is nonzero - this is what kept
+// realized R:R stuck around ~1.45:1 even after the qty fix (found live,
+// second backtest run: -36.4% instead of -46.4%, barely moved). Widening
+// the target distance by (R+1)*commissionCost on top of R*stopDistance
+// exactly cancels that: win = qty*(R*stopDistance + (R+1)*commissionCost -
+// commissionCost) = qty*R*(stopDistance+commissionCost) = R*riskAmount.
+f_targetDistance(stopDistance, entryPrice) =>
+    commissionCost = entryPrice * (commissionPctPerSide / 100) * 2
+    rewardRiskRatio * stopDistance + (rewardRiskRatio + 1) * commissionCost
+
+// ---- Diagnostic logging (temp) ----
+// Open the "Pine Logs" panel (next to Strategy Tester) after running this
+// on the chart, then use its export/copy button to pull the full log and
+// hand it back for review. The closed-trade log is checked FIRST, before
+// any new entry this bar can overwrite lastStopPrice/lastTargetPrice - the
+// first version of this file had that backwards (entries were logged
+// before checking for a same-bar close), which mislabeled the STOP/TARGET
+// reason on same-bar close+reentry trades. Fixed here.
+var float lastStopPrice   = na
+var float lastTargetPrice = na
+var int   prevClosedCount = 0
+
+if strategy.closedtrades > prevClosedCount
+    idx = strategy.closedtrades - 1
+    entryPrice = strategy.closedtrades.entry_price(idx)
+    exitPrice  = strategy.closedtrades.exit_price(idx)
+    profit     = strategy.closedtrades.profit(idx)
+    tradeSize  = strategy.closedtrades.size(idx)
+    direction  = tradeSize > 0 ? "LONG" : "SHORT"
+    reason = "UNKNOWN"
+    if not na(lastStopPrice) and not na(lastTargetPrice)
+        reason := math.abs(exitPrice - lastStopPrice) < math.abs(exitPrice - lastTargetPrice) ? "STOP" : "TARGET"
+    log.info(str.format("CLOSED {0} | entry={1,number,#.##} exit={2,number,#.##} profit={3,number,#.##} reason={4} equityAfter={5,number,#.##}",
+         direction, entryPrice, exitPrice, profit, reason, strategy.equity))
+    prevClosedCount := strategy.closedtrades
+
+if longCondition
+    stopDistance = atrValue * atrStopMult
+    qty = f_qtyForRisk(stopDistance, close)
+    stopPrice = close - stopDistance
+    targetPrice = close + f_targetDistance(stopDistance, close)
+    lastStopPrice := stopPrice
+    lastTargetPrice := targetPrice
+    strategy.entry("Long", strategy.long, qty=qty)
+    strategy.exit("Exit-Long", from_entry="Long", stop=stopPrice, limit=targetPrice)
+    log.info(str.format("ENTRY LONG | close={0,number,#.##} upperLevel={1,number,#.##} vol={2,number,#.##} volAvg={3,number,#.##} atr={4,number,#.##} stop={5,number,#.##} target={6,number,#.##} qty={7,number,#.####} notional={8,number,#.##} equity={9,number,#.##}",
+         close, upperLevel, volume, volAvg, atrValue, stopPrice, targetPrice, qty, qty * close, strategy.equity))
+
+if shortCondition
+    stopDistance = atrValue * atrStopMult
+    qty = f_qtyForRisk(stopDistance, close)
+    stopPrice = close + stopDistance
+    targetPrice = close - f_targetDistance(stopDistance, close)
+    lastStopPrice := stopPrice
+    lastTargetPrice := targetPrice
+    strategy.entry("Short", strategy.short, qty=qty)
+    strategy.exit("Exit-Short", from_entry="Short", stop=stopPrice, limit=targetPrice)
+    log.info(str.format("ENTRY SHORT | close={0,number,#.##} lowerLevel={1,number,#.##} vol={2,number,#.##} volAvg={3,number,#.##} atr={4,number,#.##} stop={5,number,#.##} target={6,number,#.##} qty={7,number,#.####} notional={8,number,#.##} equity={9,number,#.##}",
+         close, lowerLevel, volume, volAvg, atrValue, stopPrice, targetPrice, qty, qty * close, strategy.equity))
+
+plot(upperLevel, "Donchian upper", color=color.green)
+plot(lowerLevel, "Donchian lower", color=color.red)
+plot(volAvg * volMultiplier, "Heavy volume threshold", color=color.purple, display=display.data_window)
+plot(useTrendFilter ? trendMA : na, "Trend filter SMA", color=color.orange)
+// Visual confirmation of which window is actually active - check this
+// shading matches the intended test period before trusting the results.
+bgcolor(inDateRange ? color.new(color.blue, 92) : na)

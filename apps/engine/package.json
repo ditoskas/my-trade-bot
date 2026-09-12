@@ -9,7 +9,8 @@
     "start": "tsx --env-file-if-exists=../../.env src/index.ts",
     "typecheck": "tsc --noEmit",
     "testnet-smoke": "tsx --env-file-if-exists=../../.env src/scripts/testnetSmokeTest.ts",
-    "futures-testnet-smoke": "tsx --env-file-if-exists=../../.env src/scripts/futuresTestnetSmokeTest.ts"
+    "futures-testnet-smoke": "tsx --env-file-if-exists=../../.env src/scripts/futuresTestnetSmokeTest.ts",
+    "btc-why-hold": "tsx src/scripts/btcHighRiskWhyHold.ts"
   },
   "dependencies": {
     "@binance/futures-connector": "^0.1",

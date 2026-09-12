@@ -35,3 +35,15 @@ export interface TradeSummary {
   exitTime: string;
   closeReason: string;
 }
+
+// One apps/engine audit_log entry (see packages/shared/src/models/auditLog.ts)
+// scoped to this strategy — every DECISION/ORDER_INTENT/ORDER_FILLED/
+// RISK_BLOCK/KILL_SWITCH/etc. event, not just closed trades, so a signal
+// that never resulted in a filled order is still visible here.
+export interface DecisionLogEntrySummary {
+  id: string;
+  eventType: string;
+  source: string;
+  payload: Record<string, unknown>;
+  timestamp: string;
+}

@@ -1,9 +1,16 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { computeStrategyStats, strategiesCollection, tradesCollection } from "@trade-bot/shared";
+import { auditLogCollection, computeStrategyStats, strategiesCollection, tradesCollection } from "@trade-bot/shared";
 import { getMongo } from "@/lib/mongo";
-import type { TradeSummary } from "@/lib/types";
+import type { DecisionLogEntrySummary, TradeSummary } from "@/lib/types";
 import { StrategyControls } from "./StrategyControls";
+import { StrategyLogTabs } from "./StrategyLogTabs";
+
+// Cap on how many decision-log rows a strategy detail page fetches —
+// audit_log grows one DECISION entry per non-HOLD signal (plus
+// ORDER_INTENT/FILLED/RISK_BLOCK/etc.) for as long as the strategy has
+// been enabled, so an unbounded query could return an unbounded page.
+const DECISION_LOG_LIMIT = 300;
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +35,21 @@ export default async function StrategyDetailPage({ params }: { params: Promise<{
 
   const trades = await tradesCollection(db).find({ strategyId: strategy._id }).sort({ exitTime: -1 }).toArray();
   const stats = computeStrategyStats(trades, strategy.allocatedCapital);
+
+  const auditEntries = await auditLogCollection(db)
+    .find({ strategyId: strategy._id })
+    .sort({ timestamp: -1 })
+    .limit(DECISION_LOG_LIMIT)
+    .toArray();
+  const decisionLogTruncated = auditEntries.length === DECISION_LOG_LIMIT;
+
+  const decisionLogSummaries: DecisionLogEntrySummary[] = auditEntries.map((entry) => ({
+    id: entry._id.toHexString(),
+    eventType: entry.eventType,
+    source: entry.source,
+    payload: entry.payload,
+    timestamp: entry.timestamp.toISOString(),
+  }));
 
   const tradeSummaries: TradeSummary[] = trades.map((trade) => ({
     id: trade._id.toHexString(),
@@ -90,61 +112,11 @@ export default async function StrategyDetailPage({ params }: { params: Promise<{
         />
       </div>
 
-      <h2 className="mt-10 text-lg font-semibold text-zinc-900 dark:text-zinc-50">Trade log</h2>
-      {tradeSummaries.length === 0 ? (
-        <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">No closed trades yet.</p>
-      ) : (
-        <div className="mt-3 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
-          <table className="w-full text-left text-sm">
-            <thead className="bg-zinc-50 text-xs uppercase text-zinc-500 dark:bg-zinc-900 dark:text-zinc-400">
-              <tr>
-                <th className="px-4 py-3">Side</th>
-                <th className="px-4 py-3">Entry</th>
-                <th className="px-4 py-3">Exit</th>
-                <th className="px-4 py-3">Qty</th>
-                <th className="px-4 py-3">Lev.</th>
-                <th className="px-4 py-3">PnL</th>
-                <th className="px-4 py-3">Fees</th>
-                <th className="px-4 py-3">Closed</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
-              {tradeSummaries.map((trade) => (
-                <tr key={trade.id} className="hover:bg-zinc-50 dark:hover:bg-zinc-900/50">
-                  <td className="px-4 py-3">
-                    <span
-                      className={
-                        trade.side === "LONG"
-                          ? "rounded bg-emerald-100 px-2 py-0.5 text-xs font-medium text-emerald-700 dark:bg-emerald-950 dark:text-emerald-400"
-                          : "rounded bg-orange-100 px-2 py-0.5 text-xs font-medium text-orange-700 dark:bg-orange-950 dark:text-orange-400"
-                      }
-                    >
-                      {trade.side}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3">{trade.entryPrice}</td>
-                  <td className="px-4 py-3">{trade.exitPrice}</td>
-                  <td className="px-4 py-3">{trade.quantity}</td>
-                  <td className="px-4 py-3">{trade.leverage}x</td>
-                  <td
-                    className={`px-4 py-3 font-medium ${
-                      Number(trade.pnl) >= 0
-                        ? "text-emerald-600 dark:text-emerald-400"
-                        : "text-red-600 dark:text-red-400"
-                    }`}
-                  >
-                    {trade.pnl} ({trade.pnlPct.toFixed(2)}%)
-                  </td>
-                  <td className="px-4 py-3 text-zinc-500 dark:text-zinc-400">{trade.feesPaid}</td>
-                  <td className="px-4 py-3 text-xs text-zinc-500 dark:text-zinc-400">
-                    {new Date(trade.exitTime).toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <StrategyLogTabs
+        trades={tradeSummaries}
+        decisionLog={decisionLogSummaries}
+        decisionLogTruncated={decisionLogTruncated}
+      />
     </main>
   );
 }
